@@ -1,0 +1,115 @@
+## Differential gene expression and pathway analyses for CSF B cells
+
+### Run DESeq2 for CSF MBC
+
+```{r}
+# subset data for CSF
+pseudo_multi_B_CSF_gex <- subset(gex_multi_Bcells, subset = tissue == "CSF")
+
+# identify individuals with only one resting memory B cell
+subject_exclude <- pseudo_multi_B_CSF_gex@meta.data %>% 
+  dplyr::filter(annotated_clusters_B == "Resting Memory" & tissue == "CSF") %>% 
+  group_by(tissue, subject_id) %>% 
+  summarize(count = n(), .groups = "drop") %>%
+  dplyr::filter(count < 2) %>%
+  pull(subject_id)
+
+# filter individuals with less than 2 resting memory B cells
+pseudo_multi_B_CSF_gex <- subset(pseudo_multi_B_CSF_gex, subset = subject_id %in% c(subject_exclude), invert = TRUE)
+
+# run pseudobulk analysis
+deseq2_multi_CSF_B_gex <- pseudobulk_DE(
+  seurat_object   =  pseudo_multi_B_CSF_gex,
+  replicate       = "subject_id",
+  cell_clusters   = "annotated_clusters_B",
+  compare_var     = "HIV_status",
+  reference_level = "control",
+  covariate       = NULL,
+  params          = list(test = "Wald", sfType = "poscounts", fitType = "parametric", independentFiltering = TRUE)
+)
+
+# show DE genes
+deseq2_multi_CSF_B_gex$DE$`Resting Memory` %>% dplyr::filter(pvalue < 0.05) %>% arrange(avg_logFC)
+```
+
+### Run GSEA for CSF MBC
+
+```{r}
+# load Reactome reference dataabse
+path_ref_genes_reactome <- "../reference_genes/c2.cp.reactome.v2024.1.Hs.symbols.gmt"
+
+# subset for pathways of interest for validation
+reactome_pathways_subset <- read.gmt(path_ref_genes_reactome)
+reactome_pathways_subset <- reactome_pathways_subset %>% dplyr::filter(term %in% pathways_categorized$ID)
+reactome_pathways_subset <- droplevels(reactome_pathways_subset)
+
+# run GSEA
+set.seed(245)
+GSEAres_CSF_valid <- run_GSEA_analysis(deseq2_multi_CSF_B_gex$DE$`Resting Memory`, 
+                             collapse_pathways = FALSE, pvalueCutoff = 0.1, 
+                             gmt_path = path_ref_genes_reactome,
+                             subset_pathways = reactome_pathways_subset$term,
+                             scoreType_GSEA = "neg")
+
+# show results
+df <- pathways_categorized %>% dplyr::filter(category %in% c("Antigen Presentation & Adaptive Signaling")) # "Antigen Presentation & Adaptive Signaling"
+GSEAres_CSF_valid@result %>% dplyr::filter(ID %in% df$ID) %>% select(NES, qvalue)
+```
+
+### Run DESeq2 for Blood MBC
+
+```{r}
+# subset data for CSF
+pseudo_multi_B_PBMC_gex <- subset(gex_multi_Bcells, subset = tissue == "PBMC")
+
+# identify individuals with only one resting memory B cell
+subject_exclude <- pseudo_multi_B_PBMC_gex@meta.data %>% 
+  dplyr::filter(annotated_clusters_B == "Resting Memory" & tissue == "PBMC") %>% 
+  group_by(tissue, subject_id) %>% 
+  summarize(count = n(), .groups = "drop") %>%
+  dplyr::filter(count < 2) %>%
+  pull(subject_id)
+
+# remove individuals with less than 3 resting memory B cells
+pseudo_multi_B_PBMC_gex <- subset(pseudo_multi_B_PBMC_gex, subset = subject_id %in% c(subject_exclude), invert = TRUE)
+
+# run pseudobulk analysis
+deseq2_multi_PBMC_B_gex <- pseudobulk_DE(
+  seurat_object   =  pseudo_multi_B_PBMC_gex,
+  replicate       = "subject_id",
+  cell_clusters   = "annotated_clusters_B",
+  compare_var     = "HIV_status",
+  reference_level = "control",
+  covariate       = NULL,
+  params          = list(test = "Wald", sfType = "poscounts", fitType = "parametric", independentFiltering = TRUE)
+)
+
+# show DE genes
+deseq2_multi_PBMC_B_gex$DE$`Resting Memory` %>% dplyr::filter(p_val_adj < 0.05) %>% arrange(avg_logFC)
+```
+
+### Run GSEA
+
+```{r}
+# load Reactome reference dataabse
+path_ref_genes_reactome <- "../reference_genes/c2.cp.reactome.v2024.1.Hs.symbols.gmt"
+
+# subset for pathways of interest for validation
+reactome_pathways_subset <- read.gmt(path_ref_genes_reactome)
+reactome_pathways_subset <- reactome_pathways_subset %>% dplyr::filter(term %in% pathways_categorized$ID)
+reactome_pathways_subset <- droplevels(reactome_pathways_subset)
+
+# run GSEA
+GSEAres_PBMC_valid <- run_GSEA_analysis(deseq2_multi_PBMC_B_gex$DE$`Resting Memory`, 
+                             collapse_pathways = FALSE, pvalueCutoff = 10, 
+                             gmt_path = path_ref_genes_reactome,
+                             subset_pathways = reactome_pathways_subset$term,
+                             scoreType_GSEA = "std")
+
+# show results
+df <- pathways_categorized %>% dplyr::filter(category %in% c("Antigen Presentation & Adaptive Signaling")) # "Antigen Presentation & Adaptive Signaling"
+GSEAres_PBMC_valid@result %>% dplyr::filter(ID %in% df$ID) %>% select(NES, p.adjust)
+
+# remove objects
+rm(path_ref_genes_reactome, replacements)
+```

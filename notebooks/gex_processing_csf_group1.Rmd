@@ -1,0 +1,366 @@
+## GEX analysis of all cells
+
+### Load IG/TR genes to be removed from variable features
+
+```{r}
+# read in IG/TR features pulled from Ensembl 103 using biomaRt
+load(file.path("QC_features_meta_human.RData"))
+
+# create objects with genes to exclude
+biotypes_excl <- unique(features_meta[["gene_biotype"]])[grepl(pattern = "^IG_|^TR_",
+                                                               x = unique(features_meta[["gene_biotype"]]))]
+remove_genes <- features_meta[["external_gene_name"]][features_meta[["gene_biotype"]] %in% biotypes_excl]
+```
+
+### Run Seurat pipeline with standard normalization
+
+```{r}
+# run normalization and scaling
+gex_ART <- NormalizeData(gex_ART, normalization.method = "LogNormalize", scale.factor = 10000, verbose = FALSE)
+gex_ART <- FindVariableFeatures(gex_ART, selection.method = "vst", nfeatures = 2000, verbose = FALSE) 
+gex_ART <- ScaleData(gex_ART, verbose = FALSE)
+
+# remove IG and TR genes before clustering
+bool_remove_genes <- VariableFeatures(gex_ART) %in% remove_genes
+VariableFeatures(gex_ART) <- VariableFeatures(gex_ART)[!bool_remove_genes]
+cat("After removing IG/TR genes, the total number of variable features is:", length(VariableFeatures(gex_ART)), "\n")
+
+# dimensionality reduction
+gex_ART <- RunPCA(gex_ART, npcs = 70)
+gex_ART <- RunUMAP(gex_ART, dims = 1:50)
+
+# clustering
+gex_ART <- FindNeighbors(gex_ART, dims = 1:50)
+gex_ART <- FindClusters(gex_ART, resolution = 0.5)
+
+# remove objects
+rm(features_meta, biotypes_excl, bool_remove_genes, remove_genes)
+```
+
+### Doublet identification using scDblFinder
+
+```{r}
+# convert Seurat object to SingleCellExperiment
+sce <- as.SingleCellExperiment(gex_ART)
+
+# run scDblFinder
+sce_def <- scDblFinder(sce, samples = "sample_name")
+
+# add info to seurat object
+meta_scdblfinder_def <- sce_def@colData@listData %>% as.data.frame() %>% dplyr::select(scDblFinder.class)
+rownames(meta_scdblfinder_def) <- sce_def@colData@rownames
+gex_ART <- AddMetaData(object = gex_ART, metadata = meta_scdblfinder_def, col.name = "doublet_def")
+
+# calculate expected doublet rate based on cell counts before QC filtering
+dbr_expected <- gex_ART_pre_QC@meta.data %>% 
+                      group_by(sample_name) %>% 
+                      summarize(total_count = n(), .groups = "drop") %>% 
+                      mutate(exp_dbr_0.08 = total_count*0.8/1000)   # for a rate of 0.8% per 1000 captured cells (10X estimation)
+
+# summarize doublet rates
+gex_ART@meta.data %>% 
+  group_by(sample_name, doublet_def) %>% 
+  summarize(count = n(), .groups = "drop") %>% 
+  dplyr::filter(doublet_def == "doublet") %>%
+  left_join(dbr_expected, by = "sample_name") %>%
+  mutate(obs_dbr = count/total_count * 100,
+         dbr_exp_obs_delta_0.08 = exp_dbr_0.08 - obs_dbr,
+         dbr_exp_obs_delta_0.1 = exp_dbr_0.1 - obs_dbr)
+
+# remove unnecessary objects
+rm(sce, sce_def, sce_0.006, meta_scdblfinder_def, gex_ART_pre_QC, dbr_expected)
+```
+
+### Doublet removal and reclustering
+
+```{r}
+# visualize doublets before removal
+UMAPPlot(gex_ART, group.by = "seurat_clusters", raster = TRUE, label = TRUE, 
+         cells.highlight = gex_ART$cell_id_unique[gex_ART$doublet_def == "doublet"]) + 
+  scale_color_manual(values = c("Unselected" = "grey", "Group_1" = "red"),
+                     labels = c("Unselected" = "Singlets", "Group_1" = "Doublets")) +
+  labs(title = "Doublet Identification") + 
+  theme(plot.title = element_text(hjust = 0.5), axis.title = element_text(hjust = 0.5))
+
+# plot proliferation and plasmablast markers
+# proliferating cells and plasmablasts can be erroneously classified as doublets
+FeaturePlot(gex_ART, ncol = 4,
+        features = c("TOP2A", "MKI67", "CDK1", "MS4A1", "CD79A", "IGKC", "FKBP11", "CD19"))
+```
+
+```{r}
+# remove doublets for non B cells
+# B cell doublets will be removed after sub-clustering to avoid removing plasmablasts that were misclassified as doublets
+filter_barcodes <- gex_ART@meta.data %>% dplyr::filter(doublet_def == "doublet" & !seurat_clusters %in% c(5, 11, 28, 32)) %>% pull(cell_id_unique)
+
+# remove doublets
+gex_ART <- subset(gex_ART, subset = cell_id_unique %in% filter_barcodes, invert = TRUE)
+
+# clustering
+gex_ART <- FindNeighbors(gex_ART, dims = 1:50)
+gex_ART <- FindClusters(gex_ART, resolution = seq(0.1, 1.6, 0.1))
+
+# remove objects
+rm(filter_barcodes)
+```
+
+### Clustree
+
+```{r}
+clustree(gex_ART, prefix = 'RNA_snn_res.', node_text_size=3) + 
+  labs (title = "Clustering Tree of all cells in Blood and CSF") +
+  scale_color_manual(values = col_clustree)
+```
+
+```{r}
+# set resolution at 0.5
+# resolution is chosen after iterative refinement based on the clustering tree and marker genes
+Idents(gex_ART) <- gex_ART$RNA_snn_res.0.5
+gex_ART$seurat_clusters <- gex_ART$RNA_snn_res.0.5
+```
+
+### PCA
+
+```{r}
+# calculate % of explained variance
+varExplained <- gex_ART@reductions$pca@stdev^2 / gex_ART@reductions$pca@misc$total.variance
+pc1_percentage <- round(varExplained[1] * 100, 1)
+pc2_percentage <- round(varExplained[2] * 100, 1)
+
+# plot PCA
+PCAPlot(gex_ART, group.by = c("tissue", "sex", "age", "ethnicity", "race", "HIV_status"), raster = FALSE) & 
+  xlab(paste0("\nPC_1 (", pc1_percentage, "%)")) & 
+  ylab(paste0("PC_2 (", pc2_percentage,"%)\n"))
+
+# remove unnecessary objects
+rm(varExplained, pc1_percentage, pc2_percentage)
+```
+
+### UMAP
+
+```{r UMAP}
+# plot UMAP by cluster and by sample
+p1 <- UMAPPlot(gex_ART, group.by = "seurat_clusters", raster = FALSE, label = TRUE, label.box = TRUE) + 
+  scale_fill_manual(values = rep("#FFFFFF", length(gex_ART$seurat_clusters))) +
+  NoLegend()
+p2 <- UMAPPlot(gex_ART, group.by = "subject_id", raster = TRUE, label = FALSE)
+p3 <- UMAPPlot(gex_ART, group.by = "subject_id", split.by = "HIV_status", raster = TRUE, label = FALSE)
+(p1 + p2) / p3 + plot_layout(guides = "collect")
+
+# look at mixing based on HIV_status
+UMAPPlot(gex_ART, group.by = "HIV_status", raster = TRUE, label = FALSE)
+
+# doublets
+UMAPPlot(gex_ART, group.by = "seurat_clusters", raster = TRUE, label = TRUE, 
+         cells.highlight = gex_ART$cell_id_unique[gex_ART$doublet_def == "doublet"]) + 
+  scale_color_manual(values = c("Unselected" = "grey", "Group_1" = "red"),
+                     labels = c("Unselected" = "Singlets", "Group_1" = "Doublets")) +
+  ggtitle("Doublets default") + theme(axis.title = element_text(hjust = 0.5))
+
+# remove objects
+rm(p1, p2, p3, p4, p5)
+```
+
+### Cell type annotation
+
+#### Automated annotation
+
+```{r}
+# run Azimuth-based annotation for cross-check of manual annotation later
+gex_ART <- RunAzimuth(gex_ART, reference = "pbmcref")
+```
+
+#### Manual annotation
+
+```{r}
+# load marker genes
+markers_all <- read.csv(header = TRUE, file = "markers_all.csv")
+```
+
+```{r}
+p <- DotPlot(gex_ART, cluster.idents = TRUE, group.by = "seurat_clusters",
+        features = unique(markers_all$Marker)) %>%
+  add_info_bar(method = "join", 
+               info_type = "Cell_Type",
+               info = markers_all %>%
+                 dplyr::select(Cell_Type, Marker) %>%
+                 dplyr::rename(features.plot = Marker),
+               text_size = 6, label = FALSE) + RotatedAxis() +
+  ggtitle("All Cell Type Markers")
+
+# plot side metrics
+plot_dot_side(p, gex_ART, row_identity = "seurat_clusters",
+              facet_col = "Cell_Type", info_to_add = c("cluster_size"))
+```
+
+```{r}
+# annotations - resol 0.5
+annotations_general <- rbind(c("0", "CD4_TCM_1"),   
+                             c("1", "CD4_TCM_2"),  
+                             c("2", "CD8_CTL_1"),    
+                             c("3", "Mono_CD14_1"),     
+                             c("4", "B_Naive"),   
+                             c("5", "NK"),
+                             c("6", "CD8_CTL_2"),  
+                             c("7", "CD8_CTL_3"),  
+                             c("8", "T_Naive"),   
+                             c("9", "Mono_CD16"),   
+                             c("10", "Treg"),  
+                             c("11", "B_Memory"),   
+                             c("12", "MAIT"),      
+                             c("13", "CD4_TCM_3"),   
+                             c("14", "Undef_Mono_T"),    
+                             c("15", "cDC_CD1C"),   
+                             c("16", "Microglia-like_1"),   
+                             c("17", "Undef_T_CM"),    # check for low quality
+                             c("18", "PLT"),    
+                             c("19", "NK_CD56bright"),   
+                             c("20", "T_PLT"),       # possible doublets not detected by doublet finder (PLT are transcriptionally quiescent)
+                             c("21", "Mono_CD14_2"),       
+                             c("22", "Microglia-like_2"),   
+                             c("23", "pDC"),       
+                             c("24", "Proliferating"),   
+                             c("25", "Mono_CD14_4"),    # check for low quality
+                             c("26", "Mono_CD14_3"),  
+                             c("27", "Plasmablasts"),
+                             c("28", "HPC"),
+                             c("29", "cDC_CLEC9A"))
+colnames(annotations_general) <- c("Cluster", "CellType")
+annotations_general <- data.frame(annotations_general)
+
+# create object to use in RenameIdents
+annotated_clusters_all <- setNames(annotations_general$CellType, annotations_general$Cluster)
+
+# Rename Idents
+Idents(gex_ART) <- gex_ART$seurat_clusters
+gex_ART <- RenameIdents(gex_ART, annotated_clusters_all)
+gex_ART[["annotated_clusters_all"]] <- Idents(gex_ART)
+gex_ART@meta.data$annotated_clusters_all <- factor(gex_ART@meta.data$annotated_clusters_all, levels = sort(as.character(unique(gex_ART@meta.data$annotated_clusters_all))))
+
+# remove unnecessary objects
+rm(annotations_general, annotated_clusters_all)
+```
+
+#### Check for low quality cells and misclustering
+
+```{r}
+# plot QC metrics for each cluster to screen for low quality cell clustering (undefined clusters)
+VlnPlot(subset(gex_ART, subset = annotated_clusters_all %in% c("T_prolif", "Plasmablasts"), invert = TRUE), 
+        features = c("percent.mt", "percent.ribo", "nCount_RNA", "nFeature_RNA"), 
+        group.by = "annotated_clusters_all", ncol = 1, pt.size = 0) + plot_layout(axes = "collect_x", axis_titles = "collect_x")
+## some clusters (including ambiguous labels) are of low quality and therefore will be removed from further analysis
+```
+
+```{r}
+# check markers genes for automated and manual annotation
+# automated annotation (Azimuth)
+p <- DotPlot(gex_ART, cluster.idents = TRUE, group.by = "predicted.celltype.l2",
+        features = unique(markers_all$Marker)) %>%
+  add_info_bar(method = "join", 
+               info_type = "Cell_Type",
+               info = markers_all %>%
+                 dplyr::select(Cell_Type, Marker) %>%
+                 dplyr::rename(features.plot = Marker),
+               text_size = 6, label = FALSE) + RotatedAxis() +
+  ggtitle("All Cell Type Markers")
+
+plot_dot_side(p, gex_ART, row_identity = "predicted.celltype.l2",
+              facet_col = "Cell_Type", info_to_add = c("cluster_size"))
+
+# manual annotation 
+p <- DotPlot(gex_ART, cluster.idents = TRUE, group.by = "annotated_clusters_all",
+        features = unique(markers_all$Marker)) %>%
+  add_info_bar(method = "join", 
+               info_type = "Cell_Type",
+               info = markers_all %>%
+                 dplyr::select(Cell_Type, Marker) %>%
+                 dplyr::rename(features.plot = Marker),
+               text_size = 6, label = FALSE) + RotatedAxis() +
+  ggtitle("All Cell Type Markers")
+
+plot_dot_side(p, gex_ART, row_identity = "annotated_clusters_all",
+              facet_col = "Cell_Type", info_to_add = c("cluster_size"))
+
+# check distribution of automated annotations among manual annotations
+gex_ART@meta.data %>% dplyr::select(predicted.celltype.l2, annotated_clusters_all) %>% table()
+```
+
+#### Refine cell annotations
+
+```{r}
+# remove low quality clusters and doublet cluster
+gex_ART <- subset(gex_ART, subset = annotated_clusters_all %in% c("Mono_CD14_4", "Undef_T_CM", "Undef_Mono_T", "T_PLT"), invert = TRUE)
+
+# rerun UMAP after filtering
+gex_ART <- RunUMAP(gex_ART, dims = 1:50)
+```
+
+```{r}
+# merge clusters of the same cell type
+# refined subtypes are out of the scope of this work and would necessitate subclustering
+gex_ART@meta.data <- gex_ART@meta.data %>%
+                          mutate(annotated_clusters_all_ref = case_when(
+                                          annotated_clusters_all %in% c("CD4_TCM_1", "CD4_TCM_2", "CD4_TCM_3") ~ "CD4_TCM",
+                                          annotated_clusters_all %in% c("CD8_CTL_1", "CD8_CTL_2", "CD8_CTL_3") ~ "CD8_CTL",
+                                          annotated_clusters_all %in% c("B_Memory", "B_Naive") ~ "B",
+                                          annotated_clusters_all %in% c("Mono_CD14_1", "Mono_CD14_2", "Mono_CD14_3") ~ "Mono_CD14",
+                                          annotated_clusters_all %in% c("cDC_CD1C", "cDC_CLEC9A") ~ "cDC",
+                                          annotated_clusters_all %in% c("Microglia-like_1", "Microglia-like_2") ~ "Microglia-like",
+                                          TRUE ~ annotated_clusters_all))
+
+# add high-level annotation layer for basic cell types
+gex_ART@meta.data <- gex_ART@meta.data %>%
+                          mutate(annotated_clusters_gen = case_when(
+                                          annotated_clusters_all_ref %in% c("CD4_TCM", "T_Naive", "Treg", "MAIT", "CD8_CTL") ~ "T",
+                                          annotated_clusters_all_ref %in% c("Mono_CD14", "Mono_CD16") ~ "Mono",
+                                          annotated_clusters_all_ref %in% c("B_Memory", "B_Naive", "Plasmablasts") ~ "B",
+                                          annotated_clusters_all_ref %in% c("cDC", "pDC") ~ "DC",
+                                          annotated_clusters_all_ref %in% c("NK", "NK_CD56bright") ~ "NK",
+                                          TRUE ~ annotated_clusters_all_ref))
+
+# Rename cell annotations for better visualization
+gex_ART$annotated_clusters_all_ref[gex_ART$annotated_clusters_all_ref == "CD4_TCM"] <- "CD4 TCM"
+gex_ART$annotated_clusters_all_ref[gex_ART$annotated_clusters_all_ref == "CD8_CTL"] <- "CD8 CTL"
+gex_ART$annotated_clusters_all_ref[gex_ART$annotated_clusters_all_ref == "B"] <- "B"
+gex_ART$annotated_clusters_all_ref[gex_ART$annotated_clusters_all_ref == "Mono_CD14"] <- "CD14 Monocytes"
+gex_ART$annotated_clusters_all_ref[gex_ART$annotated_clusters_all_ref == "Mono_CD16"] <- "CD16 Monocytes"
+gex_ART$annotated_clusters_all_ref[gex_ART$annotated_clusters_all_ref == "T_Naive"] <- "Naive T"
+gex_ART$annotated_clusters_all_ref[gex_ART$annotated_clusters_all_ref == "NK_CD56bright"] <- "NK CD56"
+gex_ART$annotated_clusters_all_ref[gex_ART$annotated_clusters_all_ref == "PLT"] <- "Platelets"
+
+# convert to factor
+gex_ART$annotated_clusters_all_ref <- as.factor(gex_ART$annotated_clusters_all_ref)
+gex_ART$annotated_clusters_gen <- as.factor(gex_ART$annotated_clusters_gen)
+
+# set default Idents
+Idents(gex_ART) <- gex_ART$annotated_clusters_all_ref
+```
+
+### B cell statistics
+
+```{r}
+# plot UMAP with highlighted BCRs
+UMAPPlot(gex_ART, pt.size = 0.1, sizes.highlight = 0.1, raster = FALSE, repel = TRUE,
+         group.by = "annotated_clusters_all_ref", label = TRUE, label.box = TRUE,
+         cells.highlight = Cells(gex_ART)[which(gex_ART$contains_bcr)]) + 
+    scale_fill_manual(values = rep("#FFFFFF", length(gex_ART$annotated_clusters_all_ref))) +
+    NoLegend() + ggtitle("BCRs highlighted")
+
+# calculate BCRs in B cell clusters
+B_cells_df <- gex_ART@meta.data %>% dplyr::filter(annotated_clusters_all_ref %in% c("B", "Plasmablasts"))
+BCR_neg_in_B_PBMC <- B_cells_df %>% dplyr::filter(contains_bcr == FALSE & tissue == "PBMC") %>% pull(cell_id_unique) %>% n_distinct()
+BCR_neg_in_B_CSF <- B_cells_df %>% dplyr::filter(contains_bcr == FALSE & tissue == "CSF") %>% pull(cell_id_unique) %>% n_distinct()
+nb_B_PBMC <- B_cells_df %>% dplyr::filter(tissue == "PBMC") %>% pull(cell_id_unique) %>% n_distinct()
+nb_B_CSF <- B_cells_df %>% dplyr::filter(tissue == "CSF") %>% pull(cell_id_unique) %>% n_distinct()
+
+# calculate proportions
+paste0("Out of ", sum(gex_ART$contains_bcr), " cells with BCR, ", 
+       sum(B_cells_df$contains_bcr), " (", round(sum(B_cells_df$contains_bcr) / sum(gex_ART$contains_bcr)*100,1), "%) are found in B cell clusters.")
+paste0("Out of ", length(B_cells_df$contains_bcr), " cells in B cell clusters, ", 
+       sum(B_cells_df$contains_bcr), " (", round(sum(B_cells_df$contains_bcr) / length(B_cells_df$contains_bcr)*100,1), "%) have BCRs.")
+paste0("Out of ", nb_B_PBMC, " B cells in PBMCs, ", BCR_neg_in_B_PBMC, " (", round(BCR_neg_in_B_PBMC/nb_B_PBMC*100,1), "%) don't have BCRs.")
+paste0("Out of ", nb_B_CSF, " B cells in CSF, ", BCR_neg_in_B_CSF, " (", round(BCR_neg_in_B_CSF/nb_B_CSF*100,1), "%) don't have BCRs.")
+
+# remove objects
+rm(B_cells_df, BCR_neg_in_B_PBMC, BCR_neg_in_B_CSF, nb_B_PBMC, nb_B_CSF)
+```

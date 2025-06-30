@@ -1,0 +1,107 @@
+## Remove mitochondrial, ribosomal and IG genes from count matrices
+
+```{r}
+# mitochondrial genes
+genes_mitochondrial <- grep(pattern = "^MT-", x = rownames(gex_B_ART), value = TRUE) 
+
+# ribosomal genes
+genes_ribosomal <- grep(pattern = "^RP[SL][[:digit:]]|^RPLP[[:digit:]]|^RPSA", x = rownames(gex_B_ART), value = TRUE) 
+genes_ribosomal <- grep(pattern = "[BK-]|AP|[[:digit:]](.+)L", x = genes_ribosomal, invert = TRUE, value = TRUE)
+
+# IG/TR genes
+load(file.path("QC_features_meta_human.RData"))
+biotypes_excl <- unique(features_meta[["gene_biotype"]])[grepl(pattern = "^IG_|^TR_", x = unique(features_meta[["gene_biotype"]]))]
+genes_IG_TR <- features_meta[["external_gene_name"]][features_meta[["gene_biotype"]] %in% biotypes_excl]
+
+# subset seurat object to remove these genes
+gex_B_ART <- subset(gex_B_ART, features = setdiff(rownames(gex_B_ART), c(genes_mitochondrial, genes_ribosomal, genes_IG_TR)))
+
+# clean up
+rm(genes_mitochondrial, genes_ribosomal, features_meta, biotypes_excl, genes_IG_TR)
+```
+
+
+## Differential gene expression and pathway analyses for CSF B cells
+
+### Run DESeq2 for CSF MBC
+
+```{r}
+# subset data for CSF
+pseudo_B_CSF_gex <- subset(gex_B_ART, subset = tissue == "CSF")
+
+# run pseudobulk analysis
+deseq2_CSF_B_gex <- pseudobulk_DE(
+  seurat_object   =  pseudo_B_CSF_gex,
+  replicate       = "subject_id",
+  cell_clusters   = "annotated_clusters_B",
+  compare_var     = "HIV_status",
+  reference_level = "control",
+  covariate       = NULL,
+  params          = list(test = "Wald", sfType = "poscounts", fitType = "parametric", independentFiltering = TRUE)
+)
+
+# show DE genes
+deseq2_CSF_B_gex$DE$`Resting Memory` %>% dplyr::filter(p_val_adj < 0.05) %>% arrange(avg_logFC)
+```
+
+### Run GSEA
+
+```{r}
+# load Reactome reference dataabse
+path_ref_genes_reactome <- "../reference_genes/c2.cp.reactome.v2024.1.Hs.symbols.gmt"
+
+# run GSEA
+set.seed(123)
+GSEAres_CSF_discov <- run_GSEA_analysis(deseq2_CSF_B_gex$DE$`Resting Memory`, 
+                             collapse_pathways = FALSE, pvalueCutoff = 0.1, 
+                             gmt_path = path_ref_genes_reactome)
+
+# show results
+GSEAres_CSF_discov@result %>% dplyr::filter(qvalue < 0.05)
+
+# remove objects
+rm(path_ref_genes_reactome, replacements)
+```
+
+## Differential gene expression and pathway analyses for blood B cells
+
+### Run DESeq2 for blood MBC
+
+```{r}
+# subset data for PBMC
+pseudo_B_PBMC_gex <- subset(gex_B_ART, subset = tissue == "PBMC")
+
+# run pseudobulk analysis
+deseq2_PBMC_B_gex <- pseudobulk_DE(
+  seurat_object   =  pseudo_B_PBMC_gex,
+  replicate       = "subject_id",
+  cell_clusters   = "annotated_clusters_B",
+  compare_var     = "HIV_status",
+  reference_level = "control",
+  covariate       = NULL,
+  params          = list(test = "Wald", sfType = "poscounts", fitType = "parametric", independentFiltering = TRUE)
+)
+
+# show DE genes
+deseq2_PBMC_B_gex$DE$`Resting Memory` %>% dplyr::filter(p_val_adj < 0.05) %>% arrange(avg_logFC)
+deseq2_PBMC_B_gex$DE$`Resting Memory` %>% dplyr::filter(p_val_adj < 0.05 & avg_logFC > 0) %>% nrow()
+deseq2_PBMC_B_gex$DE$`Resting Memory` %>% dplyr::filter(p_val_adj < 0.05 & avg_logFC < 0) %>% nrow()
+```
+
+### Run GSEA for blood MBC
+
+```{r}
+# load Reactome reference dataabse
+path_ref_genes_reactome <- "../reference_genes/c2.cp.reactome.v2024.1.Hs.symbols.gmt"
+
+# run GSEA
+GSEAres_blood_discov <- run_GSEA_analysis(deseq2_PBMC_B_gex$DE$`Resting Memory`, 
+                             collapse_pathways = FALSE, pvalueCutoff = 10, 
+                             gmt_path = path_ref_genes_reactome)
+
+# show results
+GSEAres_blood@result %>% dplyr::filter(p.adjust < 0.05)
+
+# remove objects
+rm(path_ref_genes_reactome, replacements)
+```

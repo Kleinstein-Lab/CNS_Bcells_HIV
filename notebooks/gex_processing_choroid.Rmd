@@ -1,0 +1,368 @@
+## GEX analysis of all cells
+
+### Load IG/TR genes to be removed from variable features
+
+```{r}
+# read in IG/TR features pulled from Ensembl 103 using biomaRt
+load(file.path("QC_features_meta_human.RData"))
+
+# create objects with genes to exclude
+biotypes_excl <- unique(features_meta[["gene_biotype"]])[grepl(pattern = "^IG_|^TR_",
+                                                               x = unique(features_meta[["gene_biotype"]]))]
+remove_genes <- features_meta[["external_gene_name"]][features_meta[["gene_biotype"]] %in% biotypes_excl]
+```
+
+### Run Seurat pipeline without integration
+
+```{r}
+# run normalization and scaling
+gex_choroid <- NormalizeData(gex_choroid, normalization.method = "LogNormalize", scale.factor = 10000)
+gex_choroid <- FindVariableFeatures(gex_choroid, selection.method = "vst", nfeatures = 2000)
+gex_choroid <- ScaleData(gex_choroid)
+
+# remove Ig and Tr genes before clustering
+bool_remove_genes <- VariableFeatures(gex_choroid) %in% remove_genes
+VariableFeatures(gex_choroid) <- VariableFeatures(gex_choroid)[!bool_remove_genes]
+cat("After removing IG/TR genes, the total number of variable features is:", length(VariableFeatures(gex_choroid)), "\n")
+
+# dimensionality reduction
+gex_choroid <- RunPCA(gex_choroid, npcs = 70)
+gex_choroid <- RunUMAP(gex_choroid, dims = 1:50, reduction = "pca", reduction.name = "umap.unintegrated")
+
+# clustering
+gex_choroid <- FindNeighbors(gex_choroid, dims = 1:50, reduction = "pca")
+gex_choroid <- FindClusters(gex_choroid, resolution = 0.5)
+
+# check for batch effects
+DimPlot(gex_choroid, group.by = "sample_name", reduction = "umap.unintegrated")
+```
+
+### Doublet identification (scDblFinder)
+
+```{r}
+# convert Seurat object to SingleCellExperiment
+sce <- as.SingleCellExperiment(gex_choroid)
+
+# run scDblFinder with different doublet rates
+sce_def <- scDblFinder(sce, samples = "sample_name")                
+
+# add info to seurat object
+meta_scdblfinder_def <- sce_def@colData@listData %>% as.data.frame() %>% dplyr::select(scDblFinder.class)
+rownames(meta_scdblfinder_def) <- sce_def@colData@rownames
+gex_choroid <- AddMetaData(object = gex_choroid, metadata = meta_scdblfinder_def, col.name = "doublet_def")
+
+# summarize doublet rates
+gex_choroid@meta.data %>% 
+  group_by(sample_name, doublet_def) %>% 
+  summarize(count = n(), .groups = "drop") %>% 
+  dplyr::filter(doublet_def == "doublet") %>%
+  left_join(dbr_expected, by = "sample_name") %>%
+  mutate(obs_dbr = count/total_count * 100,
+         dbr_exp_obs_delta_0.08 = exp_dbr_0.08 - obs_dbr,
+         dbr_exp_obs_delta_0.1 = exp_dbr_0.1 - obs_dbr) %>%
+  kable() %>% kable_styling("striped")
+
+# remove unnecessary objects
+rm(sce, sce_def, meta_scdblfinder_def)
+```
+
+```{r}
+# visualize doublets before removal
+DimPlot(gex_choroid, reduction = "umap.unintegrated", raster = TRUE, label = FALSE, 
+         cells.highlight = gex_choroid$cell_id_unique[gex_choroid$doublet_def == "doublet"]) + 
+  scale_color_manual(values = c("Unselected" = "grey", "Group_1" = "red"),
+                     labels = c("Unselected" = "Singlets", "Group_1" = "Doublets")) +
+  ggtitle("Doublets") + NoLegend() +
+  theme(plot.title = element_text(hjust = 0.5), axis.title = element_text(hjust = 0.5))
+
+# plot proliferation markers
+VlnPlot(gex_choroid, ncol = 3,
+        features = c("TOP2A", "MKI67", "CDK1", "MS4A1", "CD79A", "IGKC", "FKBP11", "CD19"))
+```
+
+```{r}
+# remove doublets for non B cells; B cell doublets will be removed more careful after subclustering
+barcodes_remove <- gex_choroid@meta.data %>% dplyr::filter(doublet_def == "doublet" & seurat_clusters != 20) %>% pull(cell_id_unique)
+paste0("Among ", length(Cells(gex_choroid)), " cells (after QC filtering), ", length(barcodes_remove), " (", round(length(barcodes_remove) / length(Cells(gex_choroid)) * 100, 1), "%) cells will be removed as doublets.")
+
+# remove doublets
+gex_choroid <- subset(gex_choroid, subset = cell_id_unique %in% barcodes_remove, invert = TRUE)
+
+# remove objects
+rm(barcodes_remove)
+```
+
+### Integration using Harmony
+
+```{r}
+# split layers
+gex_choroid[["RNA"]] <- split(gex_choroid[["RNA"]], f = gex_choroid$sample_name)
+
+# reprocess seurat object by sample
+gex_choroid <- NormalizeData(gex_choroid, normalization.method = "LogNormalize", scale.factor = 10000, verbose = FALSE)
+gex_choroid <- FindVariableFeatures(gex_choroid, selection.method = "vst", nfeatures = 2000, verbose = FALSE)
+gex_choroid <- ScaleData(gex_choroid, verbose = FALSE)
+
+# remove Ig and Tr genes before clustering
+bool_remove_genes <- VariableFeatures(gex_choroid) %in% remove_genes
+VariableFeatures(gex_choroid) <- VariableFeatures(gex_choroid)[!bool_remove_genes]
+cat("After removing IG/TR genes, the total number of variable features is:", length(VariableFeatures(gex_choroid)), "\n")
+
+# dimensionality reduction
+gex_choroid <- RunPCA(gex_choroid, npcs = 70)
+
+# perform integration
+gex_choroid <- IntegrateLayers(
+  object = gex_choroid, method = HarmonyIntegration,
+  orig.reduction = "pca", new.reduction = "harmony",
+  verbose = FALSE
+)
+
+# join layers without integration
+gex_choroid[["RNA"]] <- JoinLayers(gex_choroid[["RNA"]])
+
+# Run UMAP and clustering using harmony embeddings
+gex_choroid <- RunUMAP(gex_choroid, dims = 1:50, reduction = "harmony", reduction.name = "umap.harmony")
+gex_choroid <- FindNeighbors(gex_choroid, dims = 1:50, reduction = "harmony")
+gex_choroid <- FindClusters(gex_choroid, resolution = seq(0.1, 1.6, 0.1))
+
+# check for batch effects
+p1 <- DimPlot(gex_choroid, group.by = "sample_name", reduction = "umap.unintegrated", raster = FALSE) + 
+  labs(title = "No integration") + theme(plot.title = element_text(hjust = 0.5))
+p2 <- DimPlot(gex_choroid, group.by = "sample_name", reduction = "umap.harmony", raster = FALSE) + 
+  labs(title = "Harmony integration") + theme(plot.title = element_text(hjust = 0.5))
+p1 + p2 + plot_layout(guides = "collect")
+```
+
+### Clustree
+
+```{r}
+clustree(gex_choroid, prefix = 'RNA_snn_res.', node_text_size = 3) + 
+  labs (title = "Clustering Tree of all cells in Choroid Plexus data") +
+  scale_color_manual(values = col_clustree) + 
+  theme(plot.title = element_text(hjust = 0.5))
+```
+
+```{r}
+# set resolution
+Idents(gex_choroid) <- gex_choroid$RNA_snn_res.0.3
+gex_choroid$seurat_clusters <- gex_choroid$RNA_snn_res.0.3
+```
+
+### PCA
+
+```{r}
+# calculate % of explained variance
+varExplained <- gex_choroid@reductions$pca@stdev^2 / gex_choroid@reductions$pca@misc$total.variance
+pc1_percentage <- round(varExplained[1] * 100, 1)
+pc2_percentage <- round(varExplained[2] * 100, 1)
+
+# plot PCA
+PCAPlot(gex_choroid, group.by = c("tissue", "sex", "age", "HIV_status"), raster = FALSE) & 
+  xlab(paste0("\nPC_1 (", pc1_percentage, "%)")) & 
+  ylab(paste0("PC_2 (", pc2_percentage,"%)\n"))
+
+# remove unnecessary objects
+rm(varExplained, pc1_percentage, pc2_percentage)
+```
+
+### UMAP
+
+```{r}
+# check for batch effects
+p1 <- DimPlot(gex_choroid, reduction = "umap.harmony", group.by = "seurat_clusters", raster = FALSE, label = TRUE, label.box = FALSE) +
+        scale_fill_manual(values = rep("#FFFFFF", length(gex_choroid$seurat_clusters))) +
+        NoLegend()
+p2 <- DimPlot(gex_choroid, reduction = "umap.harmony", group.by = "subject_id", raster = TRUE, label = FALSE)
+p3 <- DimPlot(gex_choroid, reduction = "umap.harmony", group.by = "subject_id", split.by = "HIV_status", raster = TRUE, label = FALSE)
+(p1 + p2) / p3 + plot_layout(guides = "collect")
+
+# look at mixing based on HIV_status
+DimPlot(gex_choroid, reduction = "umap.harmony", group.by = "HIV_status", raster = FALSE, label = FALSE)
+
+# doublets
+DimPlot(gex_choroid, reduction = "umap.harmony", group.by = "seurat_clusters", raster = FALSE, label = TRUE, 
+         cells.highlight = gex_choroid$cell_id_unique[gex_choroid$doublet_def == "doublet"], sizes.highlight = 0.5) + 
+  scale_color_manual(values = c("Unselected" = "grey", "Group_1" = "red"),
+                     labels = c("Unselected" = "Singlets", "Group_1" = "Doublets")) +
+  ggtitle("Doublets after integration", subtitle = "Only doublets in (unintegrated) B cell cluster kept") + 
+  theme(axis.title = element_text(hjust = 0.5), plot.subtitle = element_text(hjust = 0.5))
+```
+
+### Cell type annotation
+
+#### Load markers
+
+```{r}
+markers_all <- read.csv(header = TRUE, file = "markers.csv")
+```
+
+#### Plot B cell markers
+
+```{r}
+# annotations - resol 0.3
+annotations_general <- rbind(c("0", "Oligodendrocytes_1"),        
+                             c("1", "CP_mature_1"),           
+                             c("2", "CP_mature_2"),             
+                             c("3", "CP_mature_3"),           
+                             c("4", "Microglia_1_APC"),     
+                             c("5", "Astrocytes_1"),              
+                             c("6", "CP_stroma"),                     
+                             c("7", "T_CD8_CTL"),         
+                             c("8", "Neuron_1_synaptic"),   
+                             c("9", "Neuron_2_synaptic"),         
+                             c("10", "CP_mature_4"),             
+                             c("11", "OPC"),      
+                             c("12", "CP_stroma_pericytes"),               
+                             c("13", "B_cells"),        
+                             c("14", "Endothelial"),             
+                             c("15", "Astrocytes_2"),           
+                             c("16", "Oligodendrocytes_2"),
+                             c("17", "Erythrocytes"),        
+                             c("18", "Neuron_2"),             
+                             c("19", "Neuron_3"),           
+                             c("20", "Microglia_2_non_APC"))           
+colnames(annotations_general) <- c("Cluster", "CellType")
+annotations_general <- data.frame(annotations_general)
+
+# create object to use in RenameIdents
+annotated_clusters <- setNames(annotations_general$CellType, annotations_general$Cluster)
+
+# Rename Idents
+Idents(gex_choroid) <- gex_choroid$seurat_clusters
+gex_choroid <- RenameIdents(gex_choroid, annotated_clusters)
+gex_choroid[["annotated_clusters"]] <- Idents(gex_choroid)
+gex_choroid@meta.data$annotated_clusters <- factor(gex_choroid@meta.data$annotated_clusters, levels = sort(as.character(unique(gex_choroid@meta.data$annotated_clusters))))
+
+# remove unnecessary objects
+rm(annotations_general, annotated_clusters)
+```
+
+```{r}
+# combine subcluster of the same cell type
+gex_choroid@meta.data <- gex_choroid@meta.data %>%
+                            mutate(annotated_clusters_comb = case_when(
+                              annotated_clusters %in% c("Oligodendrocytes_1", "Oligodendrocytes_2") ~ "Oligodendrocytes",
+                              annotated_clusters %in% c("CP_mature_1", "CP_mature_2", "CP_mature_3", "CP_mature_4") ~ "CP mature",
+                              annotated_clusters %in% c("Microglia_1_APC", "Microglia_2_non_APC") ~ "Microglia",
+                              annotated_clusters %in% c("Astrocytes_1", "Astrocytes_2") ~ "Astrocytes",
+                              annotated_clusters %in% c("CP_stroma", "CP_stroma_pericytes") ~ "CP stroma",
+                              annotated_clusters %in% c("Neuron_1_synaptic", "Neuron_2_synaptic", "Neuron_2", "Neuron_3") ~ "Neurons",
+                              annotated_clusters %in% c("T_CD8_CTL") ~ "CD8 T cells",
+                              annotated_clusters %in% c("B_cells") ~ "B cells",
+                              TRUE ~ annotated_clusters))
+
+# combine into broad cell types
+gex_choroid@meta.data <- gex_choroid@meta.data %>%
+                            mutate(annotated_clusters_gen = case_when(
+                              annotated_clusters_comb %in% c("Oligodendrocytes", "OPC", "Astrocytes", "Neurons") ~ "Brain parenchymal cells",
+                              annotated_clusters_comb %in% c("CP mature", "CP stroma") ~ "CP cells",
+                              annotated_clusters_comb %in% c("CD8 T cells", "B cells", "Microglia") ~ "Immune cells",
+                              TRUE ~ annotated_clusters_comb
+                                ))
+
+# set as final Idents
+Idents(gex_choroid) <- gex_choroid$annotated_clusters_comb
+```
+
+##### Post-annotation quality check
+
+```{r}
+# plot UMAP with annotations
+DimPlot(gex_choroid, reduction = "umap.harmony", group.by = "annotated_clusters", 
+              raster = FALSE, label = TRUE, label.box = FALSE) + 
+  scale_fill_manual(values = rep("#FFFFFF", length(gex_choroid$annotated_clusters))) +
+  NoLegend()
+
+# plot by sample_name
+DimPlot(gex_choroid, reduction = "umap.harmony", group.by = "subject_id", raster = FALSE)
+
+# plot by HIV status
+DimPlot(gex_choroid, reduction = "umap.harmony", group.by = "annotated_clusters", split.by = "HIV_status", 
+        raster = FALSE, label = FALSE, repel = TRUE) + NoLegend()
+
+# cluster barplots for quality check
+p1 <- plot_pcts(pcts = calc_pcts(data = gex_choroid[[]],
+                           meta_group_by = c("annotated_clusters"),
+                           focus_group = "subject_id"), 
+          tissue_type = "Choroid Plexus", plot_type = "All", plot_value = "Subject_id",
+          count_by = c("annotated_clusters"),
+          x_axis = "annotated_clusters", x_axis_label = "Cell cluster", 
+          fill_type = "subject_id", fill_label = "Subject ID", 
+          details = "Resolution 0.3") +
+  theme(plot.title = element_text(size = 14, face = "bold"),
+        axis.text.x = element_text(size = 12)) + 
+  labels_rotate_x
+
+p2 <- plot_pcts(pcts = calc_pcts(data = gex_choroid[[]],
+                           meta_group_by = c("annotated_clusters"),
+                           focus_group = "HIV_status"), 
+          tissue_type = "", plot_type = "All", plot_value = "HIV Status",
+          count_by = c("annotated_clusters"),
+          x_axis = "annotated_clusters", x_axis_label = "Cell cluster", 
+          fill_type = "HIV_status", fill_label = "HIV Status", 
+          details = "Resolution 0.3") +
+  theme(plot.title = element_text(size = 14, face = "bold"),
+        axis.text.x = element_text(size = 12)) + 
+  labels_rotate_x
+
+
+p1 / p2 + plot_layout(axes = "collect_x")
+```
+
+```{r}
+# Dot plot of all cells
+DotPlot(gex_choroid, cluster.idents = FALSE, group.by = "annotated_clusters",
+        features = get_features_from_all(markers_df = markers_all, 
+                                         cell_types = unique(markers_all$Cell_Type), alphabetize_all = FALSE)) %>%
+  add_info_bar(method = "join", 
+               info_type = "Cell_Type",
+               info = markers_all %>%
+                 dplyr::select(Cell_Type, Marker) %>%
+                 dplyr::rename(features.plot = Marker),
+               text_size = 6, label = FALSE) +
+  theme(axis.text.x = element_text(size = 10, angle = 90)) +
+  ggtitle("All Cell Type Markers") + NoLegend()
+
+# Dot plot of myeloid cells
+DotPlot(gex_choroid, cluster.idents = FALSE, group.by = "annotated_clusters",
+        features = unique(markers_DC_microglia$Cell_Type)) %>%
+  add_info_bar(method = "join", 
+               info_type = "Cell_Type",
+               info = markers_DC_microglia %>%
+                 dplyr::select(Cell_Type, Marker) %>%
+                 dplyr::rename(features.plot = Marker),
+               text_size = 6, label = FALSE) + 
+  labs(title = "Myeloid cells") + 
+  theme(plot.title = element_text(hjust = 0.5),
+        axis.text.x = element_text(angle = 90)) + NoLegend()
+```
+
+### FindAllMarkers
+
+```{r}
+# FindAllMarkers
+markers_clusters_all <- FindAllMarkers(gex_choroid, only.pos = TRUE)
+
+# plot heatmap of top10 markers per cluster
+markers_clusters_all %>%
+    group_by(cluster) %>%
+    dplyr::filter(avg_log2FC > 1) %>%
+    slice_head(n = 10) %>%
+    ungroup() -> top10
+
+DoHeatmap(subset(x = gex_choroid, downsample = 500), group.by = "annotated_clusters", slot = "scale.data", features = top10$gene) #+ NoLegend()
+
+# remove object
+rm(markers_seurat_B, top10)
+```
+
+### Remove viremic participants
+
+```{r}
+# remove viremic participants
+gex_choroid_supppresed <- subset(gex_choroid, subset = HIV_status_det == "HIV_viremic", invert = TRUE)
+
+# rerun UMAP for better visualization after filtering
+gex_choroid_supppresed <- RunUMAP(gex_choroid_supppresed, reduction = "harmony", dims = 1:50)
+```

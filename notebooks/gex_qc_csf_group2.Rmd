@@ -1,0 +1,473 @@
+## Load metadata
+
+```{r}
+meta_multi <- read.table(file.path("..", "meta", "meta_csf_group2.csv"), header = TRUE, sep = ",")
+```
+
+## Load and prepare GEX data
+
+### Prepare list with Seurat objects
+
+```{r}
+# set up output list
+objs <- list()
+
+# pull sample names of interest
+sample_names <- unique(meta_multi$sample_name)
+
+# create or pull each object
+  for (sample in sample_names) {
+    cat(sample, "\n")
+
+    # metadata info
+    # you should have only one row after this point, so unique()'s are omitted
+    meta_sample <- dplyr::filter(meta_multi, sample_name == sample)
+
+    # read in the data
+    data_GEX <- Read10X_h5(file.path(path_data_GEX,
+                                  meta_sample$sample_name,
+                                  "outs",
+                                  "filtered_feature_bc_matrix.h5"))
+
+    # create the Seurat object (assay = "RNA")
+    obj <- CreateSeuratObject(counts = data_GEX, project = sample) # when using gene expression from cellranger count processed data
+
+    # Remove the "-1" suffix from cell barcodes
+    cell_names <- colnames(obj)
+    cell_names <- gsub("-1$", "", cell_names)
+    colnames(obj) <- cell_names        
+    
+    # add in the sample name to keep unique cell names during combination later
+    obj <- RenameCells(obj, add.cell.id = sample)
+    obj$cell_id_unique <- colnames(obj) # unique barcodes
+
+    # add useful metadata
+    obj$"percent.mt" <- PercentageFeatureSet(obj, pattern = "^MT-") # calculate pct of mitochondrial genes
+    obj$sample_name <- meta_sample$sample_name
+    obj$sample_final <- meta_sample$sample_final
+    obj$subject_id <- meta_sample$subject_id
+    obj$sex <- meta_sample$sex
+    obj$age <- meta_sample$age
+    obj$race <- meta_sample$race
+    obj$HIV_status <- meta_sample$HIV_status
+    obj$tissue <- meta_sample$tissue
+    obj$data_type <- meta_sample$data_type
+
+    # calculate percentage of ribosomal genes
+    ribosomal_genes <- rownames(obj)[grep("^RP[SL]", rownames(obj))]
+    obj$"percent.ribo" <- PercentageFeatureSet(obj, features = ribosomal_genes) 
+        
+    # save in the appropriate location
+    objs[[sample]] <- obj
+  }
+
+# remove unnecessary objects
+rm(data_GEX, meta_sample, obj, cell_names, path_data_GEX, sample, sample_names, ribosomal_genes)
+```
+
+### Merge Seurat objects into one object (without integration step)
+
+```{r}
+# merge samples (Seurat objects) without integration
+gex_multi <- merge(x = objs[[1]], objs[-1] )
+
+# join layers without integration
+gex_multi[["RNA"]] <- JoinLayers(gex_multi[["RNA"]])
+
+# remove objects
+rm(objs)
+```
+
+### Format metadata
+
+```{r}
+# re-order tissues
+gex_multi@meta.data$tissue <- factor(gex_multi@meta.data$tissue, levels = c("PBMC", "CSF"))
+gex_multi@meta.data$subject_id <- as.character(gex_multi@meta.data$subject_id)
+```
+
+## QC metrics
+
+### Metrics summary
+
+```{r}
+# create table with GEX metrics
+metrics_summary <- create_metrics_summary_count(meta = meta_multi, path_data_specific = path_data_GEX, data_types = "GEX")
+```
+
+```{r}
+# transform values to numeric for plotting
+# ValidBarcodes
+metrics_summary$ValidBarcodes <- as.numeric(gsub("%", "", metrics_summary$ValidBarcodes))
+names(metrics_summary)[names(metrics_summary) == "ValidBarcodes"] <- "ValidBarcodes_pct"
+
+# ReadsInCells
+metrics_summary$ReadsInCells <- as.numeric(gsub("%", "", metrics_summary$ReadsInCells))
+names(metrics_summary)[names(metrics_summary) == "ReadsInCells"] <- "ReadsInCells_pct"
+
+# SeqSaturation
+metrics_summary$SeqSaturation <- as.numeric(gsub("%", "", metrics_summary$SeqSaturation))
+names(metrics_summary)[names(metrics_summary) == "SeqSaturation"] <- "SeqSaturation_pct"
+
+# IntronicRegions
+metrics_summary$IntronicRegions <- as.numeric(gsub("%", "", metrics_summary$IntronicRegions))
+names(metrics_summary)[names(metrics_summary) == "IntronicRegions"] <- "IntronicRegions_pct"
+
+# ExonicRegions
+metrics_summary$ExonicRegions <- as.numeric(gsub("%", "", metrics_summary$ExonicRegions))
+names(metrics_summary)[names(metrics_summary) == "ExonicRegions"] <- "ExonicRegions_pct"
+
+# TranscriptomeMapping
+metrics_summary$TranscriptomeMapping <- as.numeric(gsub("%", "", metrics_summary$TranscriptomeMapping))
+names(metrics_summary)[names(metrics_summary) == "TranscriptomeMapping"] <- "TranscriptomeMapping_pct"
+
+# AntisenseMapping
+metrics_summary$AntisenseMapping <- as.numeric(gsub("%", "", metrics_summary$AntisenseMapping))
+names(metrics_summary)[names(metrics_summary) == "AntisenseMapping"] <- "AntisenseMapping_pct"
+
+# Q30 bases in read 2
+metrics_summary$Q30basesInRead <- as.numeric(gsub("%", "", metrics_summary$Q30basesInRead))
+names(metrics_summary)[names(metrics_summary) == "Q30basesInRead"] <- "Q30basesInRead_pct"
+
+# re-order tissues
+metrics_summary$tissue <- factor(metrics_summary$tissue, levels = c("PBMC", "CSF"))
+```
+
+### Metrics plots
+
+```{r}
+# Number of cells
+p <- ggplot(metrics_summary, aes(x = sample_name, y = EstimatedNumberofCells, fill = tissue)) +
+  geom_bar(stat = "identity", color = "black", linewidth = 0.2) +
+  labs(title = "Number of Cells", 
+       x = "Samples", y = "Numbers of Cells") +
+  scale_fill_manual(values = col_tissue) +
+  geom_hline(yintercept = 10000, linetype = "dashed", color = "#525252") +
+  theme_bw + labels_standard + labels_rotate_x
+
+p1 <- add_info_bar(p, info_type = "tissue", label = FALSE) + scale_y_continuous(labels = label_comma(), breaks = pretty_breaks())
+
+# Read counts
+p <- ggplot(metrics_summary, aes(x = sample_name, y = NumberofReads, fill = tissue)) +
+  geom_bar(stat = "identity", color = "black", linewidth = 0.2) +
+  labs(title = "Number of Read Counts", 
+       x = "Samples", y = "Numbers of Reads") +
+  scale_fill_manual(values = col_tissue) +
+  theme_bw + labels_standard + labels_rotate_x
+
+p2 <- add_info_bar(p, info_type = "tissue", label = FALSE) + scale_y_continuous(labels = label_comma(), breaks = pretty_breaks())
+
+# Read counts per cell
+p <- ggplot(metrics_summary, aes(x = sample_name, y = MeanReadsPerCell, fill = tissue)) +
+  geom_bar(stat = "identity", color = "black", linewidth = 0.2) +
+  labs(title = "Number of Read Counts Per Cell", 
+       x = "Samples", y = "Numbers of Reads Per Cell (median)") +
+  scale_fill_manual(values = col_tissue) +
+  geom_hline(yintercept = 20000, linetype = "dashed", color = "red") + 
+  theme_bw + labels_standard + labels_rotate_x
+
+p3 <- add_info_bar(p, info_type = "tissue", label = FALSE) + scale_y_continuous(labels = label_comma(), breaks = pretty_breaks())
+
+# Fraction of Reads in Cell
+p <- ggplot(metrics_summary, aes(x = sample_name, y = ReadsInCells_pct, fill = tissue)) +
+  geom_bar(stat = "identity", color = "black", linewidth = 0.2) +
+  labs(title = "Reads In Cell", 
+       x = "Samples", y = "Reads In Cell (%)") +
+  scale_fill_manual(values = col_tissue) +
+  geom_hline(yintercept = 70, linetype = "dashed", color = "red") + 
+  theme_bw + labels_standard + labels_rotate_x
+
+p4 <- add_info_bar(p, info_type = "tissue", label = FALSE) + scale_y_continuous(labels = label_comma(), breaks = pretty_breaks())
+
+# Total number of genes
+p <- ggplot(metrics_summary, aes(x = sample_name, y = TotalGenes, fill = tissue)) +
+  geom_bar(stat = "identity", color = "black", linewidth = 0.2) +
+  labs(title = "Total number of Genes", 
+       x = "Samples", y = "Total Numbers of Genes") +
+  scale_fill_manual(values = col_tissue) +
+  theme_bw + labels_standard + labels_rotate_x
+
+p5 <- add_info_bar(p, info_type = "tissue", label = FALSE) + scale_y_continuous(labels = label_comma(), breaks = pretty_breaks())
+
+# Genes per cell
+p <- ggplot(metrics_summary, aes(x = sample_name, y = MedianGenesPerCell, fill = tissue)) +
+  geom_bar(stat = "identity", color = "black", linewidth = 0.2) +
+  labs(title = "Number of Genes Per Cell", 
+       x = "Samples", y = "Numbers of Genes Per Cell (median)") +
+  scale_fill_manual(values = col_tissue) +
+  geom_hline(yintercept = 200, linetype = "dashed", color = "red") + 
+  theme_bw + labels_standard + labels_rotate_x
+
+p6 <- add_info_bar(p, info_type = "tissue", label = FALSE) + scale_y_continuous(labels = label_comma(), breaks = pretty_breaks())
+
+# UMI per cell
+p <- ggplot(metrics_summary, aes(x = sample_name, y = MedianUMIPerCell, fill = tissue)) +
+  geom_bar(stat = "identity", color = "black", linewidth = 0.2) +
+  labs(title = "Number of UMI Counts Per Cell", 
+       x = "Samples", y = "Numbers of UMI Counts Per Cell (median)") +
+  scale_fill_manual(values = col_tissue) +
+  theme_bw + labels_standard + labels_rotate_x
+
+p7 <- add_info_bar(p, info_type = "tissue", label = FALSE) + scale_y_continuous(labels = label_comma(), breaks = pretty_breaks())
+
+# Sequence saturation
+p <- ggplot(metrics_summary, aes(x = sample_name, y = SeqSaturation_pct, fill = tissue)) +
+  geom_bar(stat = "identity", color = "black", linewidth = 0.2) +
+  labs(title = "Sequence Saturation", 
+       x = "Samples", y = "Sequence Saturation (%)") +
+  scale_fill_manual(values = col_tissue) +
+  theme_bw + labels_standard + labels_rotate_x
+
+p8 <- add_info_bar(p, info_type = "tissue", label = FALSE) + scale_y_continuous(labels = label_comma(), breaks = pretty_breaks())
+```
+
+```{r}
+# Intronic regions
+p <- ggplot(metrics_summary, aes(x = sample_name, y = IntronicRegions_pct, fill = tissue)) +
+  geom_bar(stat = "identity", color = "black", linewidth = 0.2) +
+  labs(title = "Reads Mapped to Intronic Regions", 
+       x = "Samples", y = "Intronic Regions (%)") +
+  scale_fill_manual(values = col_tissue) +
+  geom_hline(yintercept = 20, linetype = "dashed", color = "red") + 
+  geom_hline(yintercept = 40, linetype = "dashed", color = "red") + 
+  theme_bw + labels_standard + labels_rotate_x
+
+p9 <- add_info_bar(p, info_type = "tissue", label = FALSE) + scale_y_continuous(labels = label_comma(), breaks = pretty_breaks())
+
+# Exonic regions
+p <- ggplot(metrics_summary, aes(x = sample_name, y = ExonicRegions_pct, fill = tissue)) +
+  geom_bar(stat = "identity", color = "black", linewidth = 0.2) +
+  labs(title = "Reads Mapped to Exonic Regions", 
+       x = "Samples", y = "Exonic Regions (%)") +
+  scale_fill_manual(values = col_tissue) +
+  theme_bw + labels_standard + labels_rotate_x
+
+p10 <- add_info_bar(p, info_type = "tissue", label = FALSE) + scale_y_continuous(labels = label_comma(), breaks = pretty_breaks())
+
+# Mapping to transcriptome
+p <- ggplot(metrics_summary, aes(x = sample_name, y = TranscriptomeMapping_pct, fill = tissue)) +
+  geom_bar(stat = "identity", color = "black", linewidth = 0.2) +
+  labs(title = "Reads Mapped to Transcriptome", 
+       x = "Samples", y = "Reads Mapped to Transcriptome (%)") +
+  scale_fill_manual(values = col_tissue) +
+  geom_hline(yintercept = 50, linetype = "dashed", color = "red") + 
+  theme_bw + labels_standard + labels_rotate_x
+
+p11 <- add_info_bar(p, info_type = "tissue", label = FALSE) + scale_y_continuous(labels = label_comma(), breaks = pretty_breaks())
+
+# Antisense mapping
+p <- ggplot(metrics_summary, aes(x = sample_name, y = AntisenseMapping_pct, fill = tissue)) +
+  geom_bar(stat = "identity", color = "black", linewidth = 0.2) +
+  labs(title = "Reads Mapped Antisense to Genes", 
+       x = "Samples", y = "Antisense Mapping (%)") +
+  scale_fill_manual(values = col_tissue) +
+  geom_hline(yintercept = 10, linetype = "dashed", color = "red") + 
+  theme_bw + labels_standard + labels_rotate_x
+
+p12 <- add_info_bar(p, info_type = "tissue", label = FALSE) + scale_y_continuous(labels = label_comma(), breaks = pretty_breaks())
+```
+
+```{r}
+# Q30 bases in read
+p <- ggplot(metrics_summary, aes(x = sample_name, y = Q30basesInRead_pct, fill = tissue)) +
+  geom_bar(stat = "identity", color = "black", linewidth = 0.2) +
+  labs(title = "Q30 bases in read", 
+       x = "Samples", y = "Q30 bases in read (%)") +
+  scale_fill_manual(values = col_tissue) +
+  theme_bw + labels_standard + labels_rotate_x
+
+p13 <- add_info_bar(p, info_type = "tissue", label = FALSE) + scale_y_continuous(labels = label_comma(), breaks = pretty_breaks())
+
+# Valid barcodes
+p <- ggplot(metrics_summary, aes(x = sample_name, y = ValidBarcodes_pct, fill = tissue)) +
+  geom_bar(stat = "identity", color = "black", linewidth = 0.2) +
+  labs(title = "Valid Barcodes", 
+       x = "Samples", y = "Valid Barcodes (%)") +
+  scale_fill_manual(values = col_tissue) +
+  geom_hline(yintercept = 75, linetype = "dashed", color = "red") + 
+  theme_bw + labels_standard + labels_rotate_x
+
+p14 <- add_info_bar(p, info_type = "tissue", label = FALSE) + scale_y_continuous(labels = label_comma(), breaks = pretty_breaks())
+```
+
+```{r}
+# wrap plots
+(p1 + p2 + p3 + p4) + plot_layout(nrow = 2, guides = "collect")
+(p5 + p6 + p7 + p8) + plot_layout(nrow = 2, guides = "collect")
+(p9 + p10 + p11 + p12) + plot_layout(nrow = 2, guides = "collect")
+p13 + p14
+
+# remove objects
+rm(metrics_summary)
+```
+
+
+### GEX QC metrics
+
+#### Before filtering {.tabset}
+
+```{r}
+# Number of Features
+p1 <- VlnPlot(gex_multi, features = "nFeature_RNA", split.by = "tissue", group.by = "sample_name",
+        cols = col_tissue, pt.size = 0.00, raster = FALSE, y.max = 30000) %>%
+  add_info_bar(method = "add", info_type = "tissue", label = FALSE, info = gex_multi) +
+  labs(title = "Number of Features - Before Filtering",
+       x = "sample_name") +
+  theme(axis.title.x = element_blank(), 
+        axis.text.x = element_blank()) +
+  coord_cartesian(ylim = c(0, 10000)) +
+  NoLegend() + labels_standard
+
+# Number of Counts
+p2 <- VlnPlot(gex_multi, features = "nCount_RNA", split.by = "tissue", group.by = "sample_name",
+        cols = col_tissue, pt.size = 0.00, raster = FALSE, log = TRUE) %>%
+  add_info_bar(method = "add", info_type = "tissue", info = gex_multi, label = FALSE) +
+  labs(title = "Number of Counts - Before Filtering",
+       x = "Sample Name") +
+  theme(axis.title.x = element_blank(), 
+        axis.text.x = element_blank()) +
+  NoLegend() + labels_standard +
+  scale_y_continuous(trans = "log10", 
+                     breaks = scales::trans_breaks("log10", function(x) 10^x),
+                     labels = scales::trans_format("log10", scales::math_format(10^.x)))
+
+# Percent Mitochondrial
+p3 <- VlnPlot(gex_multi, features = "percent.mt", split.by = "subject_id", group.by = "sample_name",
+        cols = col_subj, pt.size = 0.00, raster = FALSE) %>%
+  add_info_bar(method = "add", info_type = "tissue", info = gex_multi, label = FALSE) +
+  labs(title = "Percent Mitochondrial - Before Filtering",
+      x = "Sample Name") +
+  scale_y_continuous(labels = label_percent(scale = 1), breaks = seq(0, 100, by = 10)) +
+  coord_cartesian(ylim = c(0, 60)) +
+  geom_hline(yintercept = 40, linetype = "dashed", color = "#525252") + 
+  geom_hline(yintercept = 20, linetype = "dashed", color = "#525252") +
+  geom_hline(yintercept = 15, linetype = "dashed", color = "red") +
+  labels_standard + 
+  theme(axis.title.x = element_blank(), 
+        axis.text.x = element_blank())
+
+# ribosomal percentage
+p4 <- VlnPlot(gex_multi, features = "percent.ribo", split.by = "tissue", group.by = "sample_name",
+        cols = col_tissue, pt.size = 0.00, raster = FALSE) %>%
+  add_info_bar(method = "add", info_type = "tissue", info = gex_multi, label = FALSE) +
+  labs(title = "Percent Ribosomal - Before Filtering",
+      x = "Sample Name") +
+  scale_y_continuous(labels = label_percent(scale = 1), breaks = seq(0, 100, by = 5)) +
+  coord_cartesian(ylim = c(0, 20)) +
+  NoLegend() + labels_standard
+
+# empty droplets or multiplets
+p5 <- FeatureScatter(gex_multi, feature1 = "nCount_RNA", feature2 = "nFeature_RNA",
+               pt.size = 0.5, group.by = "tissue", cols = col_tissue, raster = FALSE) +
+  labs(title = "Multiplets (by Counts and Features)")
+
+# mitochrodrial percentage
+p6 <- FeatureScatter(gex_multi, feature1 = "nCount_RNA", feature2 = "percent.mt",
+               pt.size = 0.5, group.by = "tissue", cols = col_tissue, raster = FALSE) +
+  scale_x_continuous(labels = label_number(scale = 1, big.mark = ",")) +
+  coord_cartesian(xlim = c(0, 150000)) +
+  labs(title = "Mitochondrial Percentage")
+```
+
+```{r}
+# violin plots
+p1 / p2 / p3 / p4
+
+# scatter plots
+p5 / p6 + plot_layout(guides = "collect")
+```
+
+#### Apply filtering
+
+```{r}
+# values based on previous QC
+gex_multi <- subset(gex_multi, subset = nFeature_RNA > 300 & percent.mt < 20)
+
+# check number of cells after QC
+gex_multi@meta.data %>% 
+  group_by(subject_id, tissue) %>% 
+  summarize(n_cells = n()) %>% 
+  pivot_wider(names_from = tissue, values_from = n_cells, values_fill = 0)
+```
+
+#### After filtering {.tabset}
+ 
+```{r}
+# Number of Features
+p1 <- VlnPlot(gex_multi, features = "nFeature_RNA", split.by = "tissue", group.by = "sample_name",
+        cols = col_tissue, pt.size = 0.00, raster = FALSE, y.max = 10000) %>%
+  add_info_bar(method = "add", info_type = "tissue", label = FALSE, info = gex_multi) +
+  labs(title = "Number of Features - After Filtering",
+       x = "sample_name") +
+  theme(axis.title.x = element_blank(), 
+        axis.text.x = element_blank()) +
+  NoLegend() + labels_standard
+
+p0 <- VlnPlot(gex_multi, features = "nFeature_RNA", split.by = "tissue", group.by = "sample_name",
+        cols = col_tissue, pt.size = 0.00, raster = FALSE, y.max = 1000) %>%
+  add_info_bar(method = "add", info_type = "tissue", label = FALSE, info = gex_multi) +
+  labs(title = "Number of Features - After Filtering",
+       x = "sample_name") +
+  geom_hline(yintercept = 200, linetype = "dashed", color = "#525252") +
+  geom_hline(yintercept = 300, linetype = "dashed", color = "#525252") + 
+  geom_hline(yintercept = 400, linetype = "dashed", color = "#525252") + 
+  NoLegend() + labels_standard
+
+# Number of Counts
+p2 <- VlnPlot(gex_multi, features = "nCount_RNA", split.by = "tissue", group.by = "sample_name",
+        cols = col_tissue, pt.size = 0.00, raster = FALSE, log = TRUE) %>%
+  add_info_bar(method = "add", info_type = "tissue", info = gex_multi, label = FALSE) +
+  labs(title = "Number of Counts - After Filtering",
+       x = "Sample Name") +
+  theme(axis.title.x = element_blank(), 
+        axis.text.x = element_blank()) +
+  NoLegend() + labels_standard +
+  scale_y_continuous(trans = "log10", 
+                     breaks = scales::trans_breaks("log10", function(x) 10^x),
+                     labels = scales::trans_format("log10", scales::math_format(10^.x)))
+
+# Percent Mitochondrial
+p3 <- VlnPlot(gex_multi, features = "percent.mt", split.by = "subject_id", group.by = "sample_name",
+        cols = col_subj, pt.size = 0.00, raster = FALSE) %>%
+  add_info_bar(method = "add", info_type = "tissue", info = gex_multi, label = FALSE) +
+  labs(title = "Percent Mitochondrial - After Filtering",
+      x = "Sample Name") +
+  scale_y_continuous(labels = label_percent(scale = 1), breaks = seq(0, 100, by = 10)) +
+  labels_standard + 
+  theme(axis.title.x = element_blank(), 
+        axis.text.x = element_blank())
+
+# ribosomal percentage
+p4 <- VlnPlot(gex_multi, features = "percent.ribo", split.by = "tissue", group.by = "sample_name",
+        cols = col_tissue, pt.size = 0.00, raster = FALSE) %>%
+  add_info_bar(method = "add", info_type = "tissue", info = gex_multi, label = FALSE) +
+  labs(title = "Percent Ribosomal - After Filtering",
+      x = "Sample Name") +
+  scale_y_continuous(labels = label_percent(scale = 1), breaks = seq(0, 100, by = 5)) +
+  coord_cartesian(ylim = c(0, 20)) +
+  NoLegend() + labels_standard
+
+# empty droplets or multiplets
+p5 <- FeatureScatter(gex_multi, feature1 = "nCount_RNA", feature2 = "nFeature_RNA",
+               pt.size = 0.5, group.by = "tissue", cols = col_tissue, raster = FALSE) +
+  scale_x_continuous(labels = label_number(scale = 1, big.mark = ",")) +
+  labs(title = "Multiplets (by Counts and Features)") +
+  NoLegend()
+
+# mitochrodrial percentage
+p6 <- FeatureScatter(gex_multi, feature1 = "nCount_RNA", feature2 = "percent.mt",
+               pt.size = 0.5, group.by = "tissue", cols = col_tissue, raster = FALSE) +
+  scale_x_continuous(labels = label_number(scale = 1, big.mark = ",")) +
+  coord_cartesian(xlim = c(0, 150000)) +
+  labs(title = "Mitochondrial Percentage") + 
+  NoLegend()
+```
+
+```{r}
+# violin plots
+p1 / p2 / p3 / p4
+
+# scatter plots
+p5 / p6
+```
+

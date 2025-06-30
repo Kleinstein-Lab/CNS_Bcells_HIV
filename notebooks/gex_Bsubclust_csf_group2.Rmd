@@ -1,0 +1,270 @@
+## Subclustering (B cell) analysis
+
+### Load IG/TR genes to be removed from variable features
+
+```{r}
+# read in IG/TR features pulled from Ensembl 103 using biomaRt
+load(file.path("QC_features_meta_human.RData"))
+
+# create objects with genes to exclude
+biotypes_excl <- unique(features_meta[["gene_biotype"]])[grepl(pattern = "^IG_|^TR_",
+                                                               x = unique(features_meta[["gene_biotype"]]))]
+remove_genes <- features_meta[["external_gene_name"]][features_meta[["gene_biotype"]] %in% biotypes_excl]
+```
+
+### Seurat processing pipeline
+
+```{r}
+# subset gex object to B cells only
+gex_multi_Bcells <- subset(gex_multi, subset = annotated_clusters_all %in% c("B cells", "Plasmablasts"))
+
+# run normalization and scaling
+gex_multi_Bcells <- NormalizeData(gex_multi_Bcells, normalization.method = "LogNormalize", scale.factor = 10000, verbose = FALSE)
+gex_multi_Bcells <- FindVariableFeatures(gex_multi_Bcells, selection.method = "vst", nfeatures = 2000, verbose = FALSE)
+gex_multi_Bcells <- ScaleData(gex_multi_Bcells, verbose = FALSE)
+
+# remove Ig and Tr genes before clustering
+bool_remove_genes <- VariableFeatures(gex_multi_Bcells) %in% remove_genes
+VariableFeatures(gex_multi_Bcells) <- VariableFeatures(gex_multi_Bcells)[!bool_remove_genes]
+cat("After removing IG/TR genes, the total number of variable features is:", length(VariableFeatures(gex_multi_Bcells)), "\n")
+
+# dimensionality reduction
+gex_multi_Bcells <- RunPCA(gex_multi_Bcells, npcs = 70)
+
+# Run UMAP and clustering using harmony embeddings
+gex_multi_Bcells <- RunUMAP(gex_multi_Bcells, dims = 1:50, reduction = "harmony", reduction.name = "umap.harmony")
+gex_multi_Bcells <- FindNeighbors(gex_multi_Bcells, dims = 1:50, reduction = "harmony")
+gex_multi_Bcells <- FindClusters(gex_multi_Bcells, resolution = seq(0.1, 1.6, 0.1))
+
+# re-order tissues
+gex_multi_Bcells@meta.data$tissue <- factor(gex_multi_Bcells@meta.data$tissue, levels = c("PBMC", "CSF"))
+gex_multi_Bcells@meta.data$subject_id <- as.character(gex_multi_Bcells@meta.data$subject_id)
+
+# remove unnecessary objects
+rm(bool_remove_genes, biotypes_excl, remove_genes, features_meta)
+```
+
+### Clustree
+
+```{r}
+clustree(gex_multi_Bcells, prefix = 'RNA_snn_res.', node_text_size=3) + 
+  labs (title = "Clustering Tree of B cells in Blood and CSF") +
+  scale_color_manual(values = col_clustree)
+```
+
+#### Set resolution
+
+```{r}
+Idents(gex_multi_Bcells) <- gex_multi_Bcells$RNA_snn_res.0.5 
+gex_multi_Bcells$seurat_clusters <- gex_multi_Bcells$RNA_snn_res.0.5
+```
+
+### PCA
+
+```{r}
+# calculate % of explained variance
+varExplained <- gex_multi_Bcells@reductions$pca@stdev^2 / gex_multi_Bcells@reductions$pca@misc$total.variance
+pc1_percentage <- round(varExplained[1] * 100, 1)
+pc2_percentage <- round(varExplained[2] * 100, 1)
+
+# plot PCA
+PCAPlot(gex_multi_Bcells, group.by = c("tissue", "sex", "age", "ethnicity", "race", "HIV_status"), raster = FALSE) & 
+  xlab(paste0("\nPC_1 (", pc1_percentage, "%)")) & 
+  ylab(paste0("PC_2 (", pc2_percentage,"%)\n"))
+
+# remove unnecessary objects
+rm(varExplained, pc1_percentage, pc2_percentage)
+```
+
+### UMAP
+
+```{r}
+# check for batch effects
+p1 <- DimPlot(gex_multi_Bcells, reduction = "umap.harmony", group.by = "seurat_clusters", raster = FALSE, label = TRUE, label.box = TRUE) + 
+  scale_fill_manual(values = rep("#FFFFFF", length(gex_multi_Bcells$seurat_clusters))) +
+  NoLegend()
+p2 <- DimPlot(gex_multi_Bcells, reduction = "umap.harmony", group.by = "subject_id", raster = FALSE, label = FALSE)
+p3 <- DimPlot(gex_multi_Bcells, reduction = "umap.harmony", group.by = "subject_id", split.by = "HIV_status", raster = FALSE, label = FALSE)
+
+(p1 + p2) / p3 + plot_layout(guides = "collect")
+
+# look at mixing based on HIV_status
+DimPlot(gex_multi_Bcells, reduction = "umap.harmony", group.by = "HIV_status", raster = FALSE, label = FALSE)
+
+# doublets
+DimPlot(gex_multi_Bcells, reduction = "umap.harmony", group.by = "seurat_clusters", raster = FALSE, label = TRUE, 
+               pt.size = 0.1, sizes.highlight = 0.1,
+               cells.highlight = gex_multi_Bcells$cell_id_unique[gex_multi_Bcells$doublet_def == "doublet"]) + 
+  scale_color_manual(values = c("Unselected" = "grey", "Group_1" = "red"),
+                     labels = c("Unselected" = "Singlets", "Group_1" = "Doublets")) +
+  ggtitle("Doublets default") + theme(axis.title = element_text(hjust = 0.5))
+```
+
+### Cell type annotation
+
+#### Set B cell marker genes
+
+```{r}
+# load B cell marker library
+markers_b <- read.csv(header = TRUE, file = file.path(path_markers, "markers_B.csv"))
+```
+
+#### Plot B cell markers
+
+```{r}
+p <- DotPlot(gex_multi_Bcells, features = unique(markers_b$Marker), cluster.idents = FALSE, group.by = "seurat_clusters") %>%
+  add_info_bar(method = "join", 
+               info_type = "Cell_Type_Full",
+               info = markers_b %>%
+                 dplyr::select(Cell_Type_Full, Marker) %>%
+                 dplyr::rename(features.plot = Marker),
+               text_size = 6, label = FALSE) + RotatedAxis() +
+  theme(strip.text.x = element_text(size = 12)) +
+  ggtitle("All B cell markers")
+
+# plot side metrics
+plot_dot_side(p, gex_multi_Bcells, row_identity = "seurat_clusters",
+              facet_col = "Cell_Type_Full", info_to_add = c("cluster_size"))
+```
+
+### FindMarkers
+
+```{r}
+# FindAllMarkers
+markers_seurat_B <- FindAllMarkers(gex_multi_Bcells, group.by = "seurat_clusters", only.pos = TRUE)
+
+# plot heatmap of top10 markers per cluster
+markers_seurat_B %>%
+    group_by(cluster) %>%
+    dplyr::filter(avg_log2FC > 1) %>%
+    slice_head(n = 40) %>%
+    ungroup() -> top_genes
+
+# plot heatmap with markers
+DoHeatmap(subset(x = gex_multi_Bcells, downsample = 2000), group.by = "seurat_clusters", slot = "scale.data", features = top10$gene) + NoLegend()
+
+# remove object
+rm(markers_seurat_B, top_genes)
+```
+
+```{r}
+# plot T cell markers
+VlnPlot(gex_multi_Bcells, c("CD3E", "CD3G", "CD3D", "CD4", "CD8A", "TRAC", "LCK")) # cluster 3 seems to correspond to contaminating T cells or T cell RNA
+```
+
+```{r}
+# annotations
+annotations_Bgeneral <- rbind(c("0", "Naive"), 
+                              c("1", "Naive"), 
+                              c("2", "Resting Memory"), 
+                              c("3", "Naive"),  
+                              c("4", "Multiplets/T_cell_contamination"),   # based on differential marker genes and canonical T cell markers
+                              c("5", "Plasmablasts"),
+                              c("6", "Resting Memory"),
+                              c("7", "Atypical Memory"))  
+colnames(annotations_Bgeneral) <- c("Cluster", "CellType")
+annotations_Bgeneral <- data.frame(annotations_Bgeneral)
+
+# create object to use in RenameIdents
+annotated_clusters_B <- setNames(annotations_Bgeneral$CellType, annotations_Bgeneral$Cluster)
+
+# Rename Idents
+Idents(gex_multi_Bcells) <- gex_multi_Bcells$seurat_clusters
+gex_multi_Bcells <- RenameIdents(gex_multi_Bcells, annotated_clusters_B)
+gex_multi_Bcells[["annotated_clusters_B"]] <- Idents(gex_multi_Bcells)
+gex_multi_Bcells@meta.data$annotated_clusters_B <- factor(gex_multi_Bcells@meta.data$annotated_clusters_B, levels = sort(as.character(unique(gex_multi_Bcells@meta.data$annotated_clusters_B))))
+
+# remove unnecessary objects
+rm(annotations_Bgeneral, annotated_clusters_B)
+```
+
+### Check for low quality cells and misclustering
+
+```{r}
+VlnPlot(gex_multi_Bcells, 
+        features = c("percent.mt", "percent.ribo", "nCount_RNA", "nFeature_RNA"), 
+        group.by = "annotated_clusters_B", ncol = 1, pt.size = 0) + plot_layout(axes = "collect_x", axis_titles = "collect_x")
+```
+
+```{r}
+# check for post-annotation batch effects
+plot_pcts(pcts = calc_pcts(data = gex_multi_Bcells[[]],
+                           meta_group_by = c("annotated_clusters_B", "tissue"),
+                           focus_group = "subject_id"), 
+          tissue_type = "", plot_type = "All", plot_value = "Subject_id",
+          count_by = c("annotated_clusters_B", "tissue"),
+          x_axis = "annotated_clusters_B", x_axis_label = "Cell cluster", 
+          fill_type = "subject_id", fill_label = "Subject ID", 
+          details = "Resolution 0.5") +
+  facet_wrap(~ tissue, ncol = 1) +
+  theme(plot.title = element_text(size = 14, face = "bold"),
+        axis.text.x = element_text(size = 12)) + 
+  labels_rotate_x
+```
+
+### Filter final clusters
+
+```{r}
+# remove barcodes
+gex_multi_Bcells <- subset(gex_multi_Bcells, subset = annotated_clusters_B %in% c("Multiplets/T_cell_contamination"), invert = TRUE)
+
+# rerun UMAP for better visualization after filtering
+gex_multi_Bcells <- RunUMAP(gex_multi_Bcells, reduction = "harmony", dims = 1:50)
+```
+
+### Post-annotation quality check
+
+```{r}
+# plot UMAP with annotations
+DimPlot(gex_multi_Bcells, reduction = "umap.harmony", group.by = "annotated_clusters_B", 
+              raster = FALSE, label = TRUE, label.box = TRUE, repel = TRUE) + 
+  scale_fill_manual(values = rep("#FFFFFF", length(gex_multi_Bcells$annotated_clusters_B))) +
+  NoLegend()
+
+# check for differential cell types based on tissue and HIV infection
+p1 <- DimPlot(gex_multi_Bcells, reduction = "umap.harmony", split.by = "tissue", raster = FALSE, label = FALSE) 
+p2 <- DimPlot(gex_multi_Bcells, reduction = "umap.harmony", split.by = "HIV_status", raster = FALSE, label = FALSE, repel = TRUE)
+p1 / p2 + plot_layout(guides = "collect")
+
+# cluster barplots for quality check
+plot_pcts(pcts = calc_pcts(data = gex_multi_Bcells[[]],
+                           meta_group_by = c("annotated_clusters_B", "tissue"),
+                           focus_group = "subject_id"), 
+          tissue_type = "", plot_type = "All", plot_value = "Subject_id",
+          count_by = c("annotated_clusters_B", "tissue"),
+          x_axis = "annotated_clusters_B", x_axis_label = "Cell cluster", 
+          fill_type = "subject_id", fill_label = "Subject ID", 
+          details = "Resolution 0.5") +
+  theme(plot.title = element_text(size = 14, face = "bold"),
+        axis.text.x = element_text(size = 12)) + 
+  facet_grid(~ tissue, scales = "free") +
+  labels_rotate_x
+
+plot_pcts(pcts = calc_pcts(data = gex_multi_Bcells[[]],
+                           meta_group_by = c("annotated_clusters_B", "tissue"),
+                           focus_group = "HIV_status"), 
+          tissue_type = "", plot_type = "All", plot_value = "HIV Status",
+          count_by = c("annotated_clusters_B", "tissue"),
+          x_axis = "annotated_clusters_B", x_axis_label = "Cell cluster", 
+          fill_type = "HIV_status", fill_label = "HIV Status", 
+          details = "Resolution 0.5") +
+  theme(plot.title = element_text(size = 14, face = "bold"),
+        axis.text.x = element_text(size = 12)) + 
+  scale_y_continuous(expand = expansion(mult = c(0.1, 0.1))) +
+  facet_wrap(~ tissue, nrow = 2, scales = "free") +
+  labels_rotate_x
+
+# Dot plot
+p <- DotPlot(gex_multi_Bcells, cluster.idents = TRUE, group.by = "annotated_clusters_B",
+        features = unique(markers_b$Marker)) %>%
+  add_info_bar(method = "join", 
+               info_type = "Cell_Type",
+               info = markers_b %>%
+                 dplyr::select(Cell_Type, Marker) %>%
+                 dplyr::rename(features.plot = Marker),
+               text_size = 6, label = FALSE) + RotatedAxis() +
+  ggtitle("All Cell Type Markers")
+
+plot_dot_side(p, gex_multi_Bcells, row_identity = "annotated_clusters_B",
+              facet_col = "Cell_Type", info_to_add = c("cluster_size"))
+```

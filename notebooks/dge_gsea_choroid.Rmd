@@ -1,0 +1,44 @@
+### Differential Gene expression
+
+#### Run DESeq2
+
+```{r}
+# run pseudobulk analysis
+deseq2_CP_B_gex <- pseudobulk_DE(
+  seurat_object   =  gex_choroid_B_suppressed,
+  replicate       = "subject_id",
+  cell_clusters   = "annotated_clusters_B",
+  compare_var     = "HIV_status",
+  reference_level = "control",
+  covariate       = NULL,
+  params          = list(test = "Wald", sfType = "poscounts", fitType = "parametric", independentFiltering = TRUE)
+)
+
+# show DE genes
+deseq2_CP_B_gex$DE$`B cells` %>% dplyr::filter(p_val_adj < 0.05) %>% arrange(avg_logFC)
+```
+
+#### Run GSEA
+
+```{r}
+# load Reactome reference dataabse
+path_ref_genes_reactome <- "../reference_genes/c2.cp.reactome.v2024.1.Hs.symbols.gmt"
+
+# run GSEA
+GSEAres_CP <- run_GSEA_analysis(deseq2_CP_B_gex$DE$`B cells`, collapse_pathways = FALSE, pvalueCutoff = 0.1, gmt_path = path_ref_genes_reactome)
+
+# define pathways of interest
+pathways_select <- c(pathways_adaptive, pathways_IFN, pathways_cytokines, pathways_viral,
+                          "REACTOME_ANTIGEN_PROCESSING_UBIQUITINATION_PROTEASOME_DEGRADATION",
+                          "REACTOME_ANTIGEN_PRESENTATION_FOLDING_ASSEMBLY_AND_PEPTIDE_LOADING_OF_CLASS_I_MHC",
+                          "REACTOME_ANTIGEN_ACTIVATES_B_CELL_RECEPTOR_BCR_LEADING_TO_GENERATION_OF_SECOND_MESSENGERS",
+                          "REACTOME_HCMV_EARLY_EVENTS",
+                          "REACTOME_LATE_SARS_COV_2_INFECTION_EVENTS",
+                          "REACTOME_DOWNSTREAM_SIGNALING_EVENTS_OF_B_CELL_RECEPTOR_BCR")
+
+# show results
+GSEAres_CP@result %>% dplyr::filter(ID %in% pathways_select) %>% dplyr::filter(qvalue < 0.05)
+
+# remove objects
+rm(path_ref_genes_reactome, replacements)
+```

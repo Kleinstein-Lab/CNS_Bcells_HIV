@@ -1,0 +1,831 @@
+## Load and prepare BCR data
+
+```{r}
+# samples to load
+subjects <- c(paste0("C", 1:6), paste0("P", 2:8))
+bcr_data_list <- list()
+
+# Loop through the sample names, load the airrflow-processed data, and create unique id
+for (subject in subjects) {
+  # Read the data
+  bcr_data <- airr::read_rearrangement(file.path(path_airr_BCR, "all_reps_clone_report", "repertoires", paste0(subject, "__clone-pass.tsv")))
+  
+  # Simplify sample_id
+  bcr_data$sample_id <- gsub("_BCR", "", bcr_data$sample_id)
+  
+  # Assign unique cell_id
+  bcr_data$cell_id_unique <- paste0(bcr_data$sample_id, "_", bcr_data$cell_id)
+  bcr_data$cell_id_unique <- gsub("-.*", "", bcr_data$cell_id_unique)
+  
+  # Assign unique clone_id
+  bcr_data$clone_id_unique <- paste0(bcr_data$subject_id, "_", bcr_data$clone_id)
+  
+  # Dynamically assign the transformed data to a variable
+  bcr_data_list[[subject]] <- bcr_data
+}
+
+# Combine all data frames in the list into a single data frame
+bcr_data <- do.call(rbind, bcr_data_list)
+
+# Combine split aliquots for same sample
+bcr_data <- bcr_data %>% mutate(sample_final = case_when(
+                                            sample_id %in% c("C4_1_1_BLD", "C4_2_1_BLD") ~ "C4_1-2_1_BLD",
+                                            sample_id %in% c("C5_1_2_BLD", "C5_2_2_BLD") ~ "C5_1-2_2_BLD",
+                                            sample_id %in% c("C6_1_1_BLD", "C6_2_1_BLD") ~ "C6_1-2_1_BLD", 
+                                            sample_id %in% c("P3_1_5_BLD", "P3_2_5_BLD") ~ "P3_1-2_5_BLD", 
+                                            sample_id %in% c("P4_1_8_BLD", "P4_2_8_BLD") ~ "P4_1-2_8_BLD", 
+                                            sample_id %in% c("P5_1_7_BLD", "P5_2_7_BLD") ~ "P5_1-2_7_BLD", 
+                                            sample_id %in% c("P6_1_1_BLD", "P6_2_1_BLD") ~ "P6_1-2_1_BLD", 
+                                            sample_id %in% c("P7_1_3_BLD", "P7_2_3_BLD") ~ "P7_1-2_3_BLD",
+                                            TRUE ~ sample_id))
+bcr_data$sample_id <- bcr_data$sample_final
+bcr_data$sample_final <- NULL
+
+# remove columns clone_size_count and clone_size_freq from airrflow
+# these will be recalculated after matching BCR with GEX
+bcr_data$clone_size_count <- NULL
+bcr_data$clone_size_freq <- NULL
+
+# transform mu_freq to numeric
+bcr_data$mu_freq <- as.numeric(bcr_data$mu_freq)
+
+# remove objects
+rm(subject, subjects, bcr_data_list)
+```
+
+## Add and prepare metadata
+
+```{r}
+# add column showing controls
+bcr_data <- bcr_data %>% mutate(HIV_status = case_when(
+    subject_id %in% c("C1", "C2", "C3", "C4", "C5", "C6") ~ "control",
+    subject_id %in% c("P1", "P2", "P3", "P4", "P5", "P6", "P7", "P8") ~ "PWH",
+    TRUE ~ ""
+  ))
+
+# group isotypes
+bcr_data <- bcr_data %>% mutate(isotype_group = case_when(
+  isotype %in% c("IGHG1", "IGHG2", "IGHG3", "IGHG4") ~ "IgG", 
+  isotype %in% c("IGHA1", "IGHA2") ~ "IgA", 
+  isotype == "IGHM" ~ "IgM",
+  isotype == "IGHD" ~ "IgD", 
+  isotype == "IGHE" ~ "IgE",
+  TRUE ~ isotype
+))
+
+# reorder factor variables
+bcr_data$tissue <- factor(bcr_data$tissue, levels = c("PBMC", "CSF"))
+bcr_data$isotype_group <- factor(bcr_data$isotype_group, levels = c("IgD", "IgM", "IgG", "IgA", "IgE"))
+bcr_data$isotype <- factor(bcr_data$isotype, levels = c("IGHD", "IGHM", "IGHG1", "IGHG2", "IGHG3", "IGHG4", "IGHA1", "IGHA2", "IGHE"))
+
+# calculate CDR3 length
+bcr_data <- bcr_data %>% mutate(cdr3_length_aa = nchar(cdr3)/3)
+
+# save table for BCR matching in GEX
+write.csv(bcr_data, row.names = FALSE, file.path(path_objs, "bcr_data_gex.csv"))
+```
+
+## Add GEX information
+
+This part of the analysis is done after B cell annotation in GEX analysis.
+
+```{r}
+# add B cell subclustering annotations
+cell.annotation.B <- as.character(Idents(gex_B_ART))
+
+# match barcodes to find the position of GEX cells in BCR data
+match.index <- match(bcr_data$cell_id_unique, Cells(gex_B_ART))
+
+# B cell annotations
+# add annotations of B cell subclustering
+bcr_data <- bcr_data %>% mutate(gex_annotation = ifelse(!is.na(match.index), cell.annotation.B[match.index], NA))
+
+# remove unnecessary objects
+rm(cell.annotation.B, match.index)
+```
+
+### GEX-BCR overlap
+
+```{r}
+# explore GEX-BCR overlap
+ggVennDiagram(
+  x = list("BCR" = unique(bcr_data$cell_id_unique),
+           "GEX_B" = Cells(gex_B_ART), 
+           "GEX_All" = Cells(gex_ART))) +
+  scale_fill_distiller(palette = "Greys", direction = 1) +
+  ggtitle("Annotated BCRs - All tissues") + NoLegend()
+```
+
+### Filter only for B cells from GEX that have BCR
+
+```{r}
+# filter intersection of BCR and GEX
+bcr_data <- bcr_data %>% dplyr::filter(!is.na(gex_annotation))
+```
+
+### Refine B cell annotations
+
+The following annotations based on GEX and isotypes are biologically meaningful 
+- Naive IgM+/IgD+ cells and Naive IgM-IgD-
+- Memory IgD+, Memory IgM+ (unswitched), Memory IgG+/IgA+/IgE+
+
+```{r}
+# re-annotate B cells based on isotypes
+bcr_data <- bcr_data %>%
+  mutate(gex_annotation_final = case_when(
+  gex_annotation == "Naive" & isotype %in% c("IGHD", "IGHM") ~ "Naive", 
+  gex_annotation == "Naive" & !isotype %in% c("IGHD", "IGHM") ~ "Naive IgD/IgM-", 
+  gex_annotation == "Resting Memory" & isotype == "IGHD" ~ "MBC IgD+",
+  gex_annotation == "Resting Memory" & isotype == "IGHM" ~ "MBC class-unswitched",
+  gex_annotation == "Resting Memory" & !isotype %in% c("IGHD", "IGHM") ~ "MBC class-switched",
+  TRUE ~ gex_annotation)) %>% 
+  group_by(cell_id_unique) %>%
+  mutate(gex_annotation_final = gex_annotation_final[locus == "IGH"])
+
+# reorder annotations
+bcr_data$gex_annotation_final <- factor(bcr_data$gex_annotation_final, 
+                                  levels = c("Naive", "Naive IgD/IgM-", "Atypical Memory", "MBC IgD+", "MBC class-unswitched", "MBC class-switched", "Plasmablasts"))
+```
+
+## Call clones with B cells that were kept
+
+```{r}
+# remove clone_id information provided by airrflow
+bcr_data$clone_id <- NULL
+bcr_data$clone_id_unique <- NULL
+```
+
+### Find clonal threshold
+
+```{r}
+# Define the subject IDs
+subject_ids <- c("P2", "P3", "P4", "P5", "P6", "P7", "P8", "C1", "C2", "C3", "C4", "C5", "C6")
+
+# Initialize objects to store results
+threshold_table <- data.frame(subject_id = character(), threshold = numeric(), stringsAsFactors = FALSE)
+plot_list <- list()
+
+# Calculate cross-subject distribution of distance to nearest
+cat("Calculating cross-subject distribution of distance to nearest...\n")
+dist_crossSubj <- distToNearest(dplyr::filter(bcr_data, locus == "IGH"), nproc = 4, cross = "subject_id")
+
+# Loop through each subject_id
+for (subject in subject_ids) {
+  cat("Processing subject_id:", subject, "\n")
+  
+  # Calculate distance to nearest for the current subject_id
+  dist_nearest <- distToNearest(dplyr::filter(bcr_data, locus == "IGH", subject_id == subject))
+
+  # Find the threshold using GMM method
+  threshold_output <- shazam::findThreshold(
+    dist_nearest$dist_nearest,
+    method = "gmm",
+    model = "gamma-norm",
+    cross = dist_crossSubj$cross_dist_nearest,
+    cutoff = "user",
+    spc = 0.995
+  )
+
+  # Extract the threshold value
+  threshold_value <- threshold_output@threshold
+
+  # Store the threshold in the table
+  threshold_table <- rbind(threshold_table, data.frame(subject_id = subject, threshold = threshold_value))
+
+  # Create and store the plot
+  plot <- plot(threshold_output, binwidth = 0.02,
+               cross = dist_crossSubj$cross_dist_nearest, silent = TRUE) +
+    theme(axis.title = element_text(size = 18)) +
+    ggtitle(paste("Threshold for", subject))
+  plot_list[[subject]] <- plot
+}
+
+# Print the threshold table
+cat("\nThresholds calculated for all subject_ids:\n")
+print(threshold_table)
+
+# remove objects
+rm(subject, subject_ids, threshold_output, threshold_value, dist_nearest, dist_crossSubj, plot)
+```
+
+### Define clonal groups in filtered data
+
+```{r}
+# call clones using hierarchicalClones
+# based on the cross-subject distribution a theshold of 0.12 is selected
+bcr_data <- hierarchicalClones(bcr_data,
+                              cell_id = "cell_id_unique",
+                              threshold = 0.12,
+                              only_heavy = TRUE, split_light = TRUE,
+                              summarize_clones = FALSE,
+                              fields = "subject_id")
+
+# create unique clone_id
+bcr_data$clone_id_unique <- paste0(bcr_data$subject_id, "_", bcr_data$clone_id)
+```
+
+### Calculate clone size and identify shared clones
+
+```{r}
+# add clone_size column
+bcr_data <-  bcr_data %>%
+                group_by(clone_id_unique) %>%
+                mutate(clone_size = n_distinct(cell_id_unique)) %>%
+                ungroup()
+
+# identify expanded clones
+expanded <- countClones(filter(bcr_data, locus == "IGH"), clone = "clone_id_unique") %>% dplyr::filter(seq_count > 1) %>% pull(clone_id_unique)
+
+# identify clones in blood and CSF separately
+clones_blood <- bcr_data %>% dplyr::filter(locus == "IGH" & tissue == "PBMC") %>% pull(clone_id_unique) %>% unique()
+clones_CSF <- bcr_data %>% dplyr::filter(locus == "IGH" & tissue == "CSF") %>% pull(clone_id_unique) %>% unique()
+
+# identify shared clones across tissues and create new meta column
+shared_clones <- intersect(clones_blood, clones_CSF)
+bcr_data <- bcr_data %>% mutate(shared_BLD_CSF = clone_id_unique %in% shared_clones)
+
+# add column showing expanded cells
+bcr_data <- bcr_data %>% mutate(expanded = (shared_BLD_CSF == TRUE) | (shared_BLD_CSF == FALSE & clone_id_unique %in% expanded))
+
+# remove unnecessary objects
+rm(expanded, shared_clones, clones_blood, clones_CSF)
+```
+
+### Save final object
+
+```{r}
+write.csv(bcr_data, row.names = FALSE, file.path(path_objs, "bcr_data_filtered.csv"))
+```
+
+### Subset data for heavy chains
+
+```{r}
+bcr_heavy <- bcr_data %>% dplyr::filter(locus == "IGH")
+```
+
+## BCR repertoire characteristics
+
+### Number of B cells per group
+
+```{r}
+# calculate nb of sequences per subject_id and tissue
+bcr_heavy %>% group_by(subject_id, tissue, gex_annotation_final) %>% summarize(n_seq = n())
+```
+
+### CDR3 Length
+
+#### CDR3 distribution
+
+```{r}
+# calculate cell frequency per CDR3 length
+cdr3_length_freq <- bcr_heavy %>%
+  group_by(cdr3_length_aa, tissue, HIV_status) %>%
+  summarise(count = n(), .groups = 'drop') %>%
+  group_by(tissue, HIV_status) %>%
+  mutate(freq = count / sum(count)) %>%
+  as.data.frame() %>%
+  mutate(cdr3_length_aa = as.factor(cdr3_length_aa))
+```
+
+```{r}
+# Compare CDR3 length across all clusters
+bcr_heavy %>%
+  group_by(subject_id, tissue, HIV_status) %>% 
+  summarize(mean_cdr3_length = mean(cdr3_length_aa), .groups = "drop") %>%
+  group_by(tissue, HIV_status) %>%
+  summarize(median_of_average_CDR3 = median(mean_cdr3_length),
+            Q1 = quantile(mean_cdr3_length, probs = 0.25),
+            Q3 = quantile(mean_cdr3_length, probs = 0.75),
+            .groups = "drop")
+
+# Compare CDR3 length between clusters
+bcr_heavy %>%
+  dplyr::filter(gex_annotation_final %in% c("MBC class-unswitched", "MBC class-switched")) %>%
+  group_by(subject_id, tissue, HIV_status, gex_annotation_final) %>% 
+  summarize(mean_cdr3_length = mean(cdr3_length_aa))
+```
+
+### Light chain usage
+
+```{r}
+# Light chain usage and capture per participant
+light_usage_all <- bcr_data %>% 
+  group_by(cell_id_unique, locus, subject_id, tissue, HIV_status) %>% 
+  summarize(count = n()) %>% 
+  spread(key = locus, value = count, fill = 0) %>%
+  mutate(IGK = ifelse(IGK > 1, 1, IGK), 
+         IGL = ifelse(IGL > 1, 1, IGL)) %>%
+  mutate(light_group = case_when(
+    IGK == 0 & IGL == 0 ~ "none", 
+    IGK == 1 & IGL == 0 ~ "kappa",
+    IGK == 0 & IGL == 1 ~ "lambda", 
+    IGK == 1 & IGL == 1 ~ "both",
+    TRUE ~ NA
+  )) %>%
+  group_by(subject_id, tissue, HIV_status, light_group) %>%
+  summarize(count = n()) %>%
+  group_by(subject_id, HIV_status, tissue) %>%
+  mutate(fraction = count / sum(count)) %>%
+  ungroup()
+
+# light chain usage comparison across groups
+ratio_data <- bcr_data %>%
+  group_by(tissue, HIV_status, subject_id, locus) %>%
+  summarize(count = n(), .groups = "drop") %>%
+  spread(key = locus, value = count, fill = 0) %>%
+  mutate(lambda_fraction = IGL / (IGK + IGL), 
+         kappa_fraction = IGK / (IGK + IGL),
+         kappa_lambda = IGK / IGL)
+```
+
+## Clonal distribution
+
+```{r}
+# clonal_distribution per subject and tissue in PWH
+clones_sizes_PWH <- countClones(dplyr::filter(bcr_heavy, expanded == TRUE & HIV_status == "PWH"), groups = c("subject_id", "tissue"))
+clones_sizes_PWH$tissue <- factor(clones_sizes_PWH$tissue, levels = c("PBMC", "CSF"))
+
+p1 <- ggplot(clones_sizes_PWH, aes(x = seq_count)) +
+  geom_bar() +
+  facet_grid(tissue ~ subject_id, drop = FALSE) +
+  labs(x = "Sequences per clone", title = "Clone size distribution in PWH (clone size >1)") +
+  theme_bw()
+
+# clonal_distribution per subject and tissue in controls
+clones_sizes_controls <- countClones(dplyr::filter(bcr_heavy, expanded == TRUE & HIV_status == "control"), groups = c("subject_id", "tissue"))
+clones_sizes_controls$tissue <- factor(clones_sizes_controls$tissue, levels = c("PBMC", "CSF"))
+
+p2 <- ggplot(clones_sizes_controls, aes(x = seq_count)) +
+  geom_bar() +
+  facet_grid(tissue ~ subject_id, drop = FALSE) +
+  labs(x = "Sequences per clone", title = "Clone size distribution in controls (clone size >1)") +
+  theme_bw()
+
+p1 / p2
+
+# remove objects
+rm(clones_sizes_controls, clones_sizes_PWH)
+```
+
+## Clonal expansion
+
+### Qualitative assessment of clonal expansion
+
+```{r}
+# Summarize data
+bcr_heavy %>%
+  group_by(clone_id_unique, subject_id, HIV_status, tissue) %>%
+  summarize(
+    total_cells    = n_distinct(cell_id_unique),
+    expanded_cells = sum(expanded, na.rm = TRUE),
+    shared_cells   = sum(shared_BLD_CSF, na.rm = TRUE),
+    .groups = "drop"
+  ) %>% 
+  group_by(subject_id, HIV_status, tissue) %>%
+  summarize(
+    n_clones     = n_distinct(clone_id_unique),
+    n_singletons = sum(total_cells == 1),
+    n_expanded   = sum(expanded_cells > 0), 
+    n_shared     = sum(shared_cells > 0)
+  ) %>%
+  mutate(non_singletons = n_clones - n_singletons,
+         percent_non_singleton = round(100 * non_singletons / n_clones, 1))
+```
+
+### Rank abundance curve
+
+```{r}
+# plot the rank-abundance curves per subject_id and tissue in blood
+abund_subject_BLD <- estimateAbundance(dplyr::filter(bcr_heavy, tissue == "PBMC"),
+                                       group = "subject_id", nboot = 200, min_n = 30)
+
+plot(abund_subject_BLD) + facet_wrap("subject_id", ncol = 6) + 
+  ggtitle(paste0("Rank-abundance curve in PBMC (N = ", min(abund_subject_BLD@n), ")")) +
+  theme(plot.title = element_text(hjust = 0.5, size = 14))
+
+
+# plot the rank-abundance curves per subject_id and tissue in CSF
+# bootstrapping is inappropriate for CSF given the low number of sequences 
+# set the min threshold to 5 to enable the use of the function - ignore error zone
+abund_subject_CSF <- estimateAbundance(dplyr::filter(bcr_heavy, tissue == "CSF"),
+                                       group = "subject_id", nboot = 200, min_n = 5)
+
+plot(abund_subject_CSF) + facet_wrap("subject_id", ncol = 3) +
+  ggtitle(paste0("Rank-abundance curve in CSF (N = ", min(abund_subject_CSF@n), ")")) +
+  theme(plot.title = element_text(hjust = 0.5, size = 14))
+
+# remove objects
+rm(abund_subject_BLD, abund_subject_CSF)
+```
+
+### Diversity analysis
+
+```{r}
+# plot diversity curves per subject_id and tissue in blood
+div_PBMC <- alphaDiversity(dplyr::filter(bcr_heavy, tissue == "PBMC"),
+                      group = "subject_id", nboot = 200, min_n = 30)
+
+plot(div_PBMC, silent=T) + facet_wrap(~ factor(subject_id, levels = c(paste0("P", 2:8), paste0("C", 1:6))), ncol = 7) +
+  ggtitle(paste0("Diversity curve in PBMC (N = ", min(div_PBMC@n), ")")) +
+  theme(plot.title = element_text(hjust = 0.5, size = 14))
+
+# plot diversity curves per subject_id and tissue in CSF
+# bootstrapping is inappropriate for CSF given the low number of sequences 
+# set the min threshold to 5 to enable the use of the function - ignore error zone
+div_CSF <- alphaDiversity(dplyr::filter(bcr_heavy, tissue == "CSF"),
+                      group = "subject_id", nboot = 200, min_n = 5)
+
+plot(div_CSF, silent=T) + facet_wrap(~ factor(subject_id, levels = c(paste0("P", 2:8), paste0("C", 1:6))), ncol = 7) +
+  ggtitle(paste0("Diversity curve in CSF (N = ", min(div_CSF@n), ")")) +
+  theme(plot.title = element_text(hjust = 0.5, size = 14))
+
+# remove objects
+rm(div_PBMC, div_CSF)
+```
+
+## Shared Clones
+
+```{r}
+# list specific shared clones
+bcr_heavy %>%
+  distinct(subject_id, tissue, cell_id_unique, clone_id_unique) %>%
+  group_by(subject_id, tissue, clone_id_unique) %>%
+  summarize(n = n()) %>%
+  spread(tissue, n, fill = 0) %>%
+  dplyr::filter(PBMC > 0 & CSF > 0) %>%
+  kable() %>% kable_styling("striped")
+```
+
+## Isotype analysis
+
+### Barplots
+
+#### By subject
+
+```{r}
+# isotypes and subtypes
+plot_pcts(pcts = calc_pcts(data = dplyr::filter(bcr_heavy, !is.na(isotype)),
+                           meta_group_by = c("subject_id", "tissue", "HIV_status"),
+                           focus_group = "isotype"), plot_type = "All", plot_value = "Isotypes",
+          x_axis = "subject_id", x_axis_label = "Patient", 
+          count_by = c("subject_id", "tissue"),
+          fill_type = "isotype", fill_label = "Isotypes", 
+          clrs_specific = col_isotype) +
+  facet_wrap("tissue", scales = "fixed", nrow = 2) +
+  theme(strip.text.x = element_text(size = 12), 
+        axis.text.x = element_text(size = 12)) +
+    labs(title = "Percent of Isotypes in controls and treated PWH")
+
+# isotype group
+plot_pcts(pcts = calc_pcts(data = dplyr::filter(bcr_heavy, !is.na(isotype)),
+                           meta_group_by = c("subject_id", "tissue", "HIV_status"),
+                           focus_group = "isotype_group"), plot_type = "All", plot_value = "Isotypes",
+          x_axis = "subject_id", x_axis_label = "Patient", 
+          count_by = c("subject_id", "tissue"),
+          fill_type = "isotype_group", fill_label = "Isotypes") +
+  facet_wrap("tissue", scales = "fixed", nrow = 2) +
+  theme(strip.text.x = element_text(size = 12), 
+        axis.text.x = element_text(size = 12)) +
+    labs(title = "Percent of Isotypes in controls and treated PWH")
+```
+
+#### By cluster
+
+```{r barplot-isotype-gex-annot}
+# isotypes and subtypes per cluster
+plot_pcts(pcts = calc_pcts(data = dplyr::filter(bcr_heavy, !is.na(isotype)),
+                           meta_group_by = c("tissue", "HIV_status", "gex_annotation_final"),
+                           focus_group = "isotype"), plot_type = "All", plot_value = "Isotype",
+          x_axis = "gex_annotation_final", x_axis_label = "Cell Cluster", 
+          count_by = c("tissue", "gex_annotation_final", "HIV_status"),
+          fill_type = "isotype", fill_label = "Isotype", 
+          clrs_specific = col_isotype) +
+  facet_grid(tissue ~ HIV_status, scales = "fixed") +
+  theme(strip.text.x = element_text(size = 12), 
+        axis.text.x = element_text(size = 12, angle = 45, hjust = 1))
+
+# isotype group per cluster
+plot_pcts(pcts = calc_pcts(data = dplyr::filter(bcr_heavy, !is.na(isotype)),
+                           meta_group_by = c("tissue", "HIV_status", "gex_annotation_final"),
+                           focus_group = "isotype_group"), plot_type = "All", plot_value = "Isotype",
+          x_axis = "gex_annotation_final", x_axis_label = "Cell Cluster", 
+          count_by = c("tissue", "gex_annotation_final", "HIV_status"),
+          fill_type = "isotype_group", fill_label = "Isotype") +
+  facet_grid(tissue ~ HIV_status, scales = "fixed") +
+  theme(strip.text.x = element_text(size = 12), 
+        axis.text.x = element_text(size = 12, angle = 45, hjust = 1))
+```
+
+### CSF and blood isotype composition
+
+```{r}
+# prepare dataframes
+df_isot_gr <- calc_pcts(data = dplyr::filter(bcr_heavy, !is.na(isotype)), 
+                   meta_group_by = c("subject_id", "HIV_status", "tissue", "isotype_group"), 
+                   focus_group = "isotype_group") %>% 
+  dplyr::rename(fraction_iso = Percent) %>%
+  group_by(subject_id, HIV_status, isotype_group) %>%
+  dplyr::mutate(delta_fraction = fraction_iso[tissue == "CSF"] - fraction_iso[tissue == "PBMC"])
+
+df_isot <- calc_pcts(data = dplyr::filter(bcr_heavy, !is.na(isotype)), 
+                   meta_group_by = c("subject_id", "HIV_status", "tissue", "isotype"), 
+                   focus_group = "isotype") %>% 
+  dplyr::rename(fraction_iso = Percent) %>%
+  group_by(subject_id, HIV_status, isotype) %>%
+  dplyr::mutate(delta_fraction = fraction_iso[tissue == "CSF"] - fraction_iso[tissue == "PBMC"])
+```
+
+```{r}
+# 1. Calculate summary statistics by tissue and isotype_group
+stats_summary <- df_isot %>%
+  dplyr::filter(isotype != "IGHE") %>%
+  group_by(tissue, isotype) %>%
+  summarize(
+    mean_fraction   = mean(fraction_iso, na.rm = TRUE),
+    sd_fraction     = sd(fraction_iso, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+# 2. Perform Wilcoxon test for each isotype_group comparing fraction_iso between tissues
+wilcox_results <- df_isot %>%
+  dplyr::filter(isotype != "IgE") %>%
+  group_by(isotype) %>%
+  do(tidy(wilcox.test(fraction_iso ~ tissue, data = .))) %>%
+  ungroup() %>%
+  select(isotype, p.value) %>%
+  rename(p_value = p.value) %>%
+  mutate(p_adj = p.adjust(p_value, method = "BH"))
+
+# 3. Combine the summary statistics for each tissue into one table (wide format)
+#    and merge the Wilcoxon test results.
+stats_summary %>%
+  pivot_wider(names_from = tissue, 
+              values_from = c(mean_fraction, sd_fraction, median_fraction, Q1, Q3)) %>%
+  left_join(wilcox_results, by = "isotype")
+```
+
+#### Isotype comparisons between PWH and PWoH
+
+```{r}
+# compute p-value between PWH and PWoH
+df_isot_gr %>%
+  group_by(isotype_group, tissue) %>%
+  summarise(p_value = if (all(table(HIV_status) > 1)) wilcox.test(fraction_iso ~ HIV_status)$p.value else NA_real_, .groups = "drop") %>%
+  mutate(p_adj_BH = p.adjust(p_value, method = "BH")) %>% 
+  dplyr::filter(p_value < 0.05)
+
+df_isot %>%
+  group_by(isotype, tissue) %>%
+  summarise(p_value = if (all(table(HIV_status) > 1)) wilcox.test(fraction_iso ~ HIV_status)$p.value else NA_real_, .groups = "drop") %>%
+  mutate(p_adj_BH = p.adjust(p_value, method = "BH")) %>% 
+  dplyr::filter(p_adj_BH < 0.05)
+
+# remove objects
+rm(df_isot_gr, df_isot)
+```
+
+#### Isotype by cluster per HIV status and tissue
+
+```{r}
+# prepare dataframe for plotting
+df_isot <- calc_pcts(data = dplyr::filter(bcr_heavy, !is.na(isotype)), 
+                   meta_group_by = c("subject_id", "HIV_status", "tissue", "gex_annotation_final", "isotype_group"), 
+                   focus_group = "isotype_group") %>% 
+  dplyr::rename(fraction_iso = Percent) %>%
+  dplyr::filter(!isotype_group %in% c("IgE") & !gex_annotation_final %in% c("MBC class-unswitched"))
+
+# subset to include cell types with sufficient cell numbers
+df_isot_blood <- df_isot %>% dplyr::filter(tissue == "PBMC" & gex_annotation_final != "MBC IgD+")
+df_isot_CSF <- df_isot %>% dplyr::filter(tissue == "CSF" & gex_annotation_final == "MBC class-switched" & isotype_group %in% c("IgG", "IgA"))
+
+# p-value correction for multiple testing
+df_isot_blood %>%
+  group_by(isotype_group, gex_annotation_final, tissue) %>%
+  summarise(p_value = if (all(table(HIV_status) > 1)) wilcox.test(fraction_iso ~ HIV_status)$p.value else NA_real_, .groups = "drop") %>%
+  mutate(p_adj_BH = p.adjust(p_value, method = "BH")) %>% 
+  dplyr::filter(p_adj_BH < 0.05) %>%
+  arrange(gex_annotation_final)
+
+# remove objects
+rm(df_isot, df_isot_blood, df_isot_CSF)
+```
+
+## SHM analysis
+
+### Distribution of SHM across cell clusters
+
+```{r}
+# calculate the median mutation frequency of a clone
+mut_freq_clone_PWH <- bcr_heavy %>%
+                    dplyr::filter(gex_annotation_final != "Naive") %>%
+                    dplyr::group_by(subject_id, clone_id_unique, isotype, gex_annotation_final, tissue, HIV_status) %>%
+                    dplyr::summarize(mean_mu_freq = mean(mu_freq))
+
+# plot mu_freq histogram
+ggplot(mut_freq_clone_PWH, aes(mean_mu_freq)) +
+  geom_histogram(binwidth = 0.005) +
+  facet_grid(tissue + HIV_status ~ gex_annotation_final, scales = "free_y") +
+  labs(x = "Average SHM Frequency", y = "Number of Clonotypes") +
+  theme_bw() + theme(plot.title = element_text(size = 18, hjust = 0.5))
+```
+
+### Comparison by cluster
+
+```{r}
+# check distribution of mu_freq within each individual
+ggplot(bcr_heavy %>% dplyr::filter(!gex_annotation_final %in% c("Naive", "MBC_IGD")), 
+       aes(y = mu_freq, x = subject_id, fill = HIV_status)) +
+  geom_boxplot() +
+  geom_jitter(width = 0.1, alpha = 0.3) +
+  scale_fill_manual(values = col_HIV_status) +
+  scale_y_continuous(labels = function(x) paste0(scales::percent(x, accuracy = 1)), breaks = seq(0, 0.3, 0.025)) +
+  labs(y = "Mutation frequency", fill = "subject_id",
+       title = "Mutation frequency in treated PWH") +
+  theme_bw +
+  theme(plot.title = element_text(size = 18, hjust = 0.5)) +
+  facet_grid(tissue ~ gex_annotation_final, scales = "free") +
+  NoLegend()
+```
+
+```{r}
+# prepare dataframe
+data_mu_freq_clust_PWH_ctrl <- bcr_heavy %>% 
+                                    dplyr::filter(gex_annotation_final %in% c("MBC class-unswitched", "MBC class-switched")) %>%
+                                    group_by(subject_id, HIV_status, tissue, gex_annotation_final) %>%
+                                    dplyr::summarize(median_mu_freq = median(mu_freq), .groups = "drop")
+
+# Compute p-values by group (ignoring HIV_status)
+pvalues <- data_mu_freq_clust_PWH_ctrl %>%
+  group_by(gex_annotation_final, tissue) %>%
+  summarise(
+    p_value = if (all(table(HIV_status) > 1)) wilcox.test(median_mu_freq ~ HIV_status)$p.value else NA_real_,
+    .groups = "drop") 
+
+# Compute median, Q1, and Q3 for each group by HIV_status
+summaries <- data_mu_freq_clust_PWH_ctrl %>% 
+  dplyr::filter(gex_annotation_final %in% c("MBC class-unswitched", "MBC class-switched")) %>%
+  group_by(gex_annotation_final, tissue, HIV_status) %>%
+  summarise(
+    median_mu_freq_median = median(median_mu_freq),
+    Q1 = quantile(median_mu_freq, 0.25),
+    Q3 = quantile(median_mu_freq, 0.75),
+    .groups = "drop")
+
+# Join the two tables by gex_annotation_final and tissue
+combined_table <- left_join(summaries, pvalues, by = c("gex_annotation_final", "tissue"))
+combined_table
+```
+
+```{r}
+# prepare table
+delta_tissue_mu_freq <- bcr_heavy %>%
+                             dplyr::filter(gex_annotation_final %in% c("MBC class-unswitched", "MBC class-switched")) %>%
+                             group_by(subject_id, HIV_status, tissue, gex_annotation_final) %>%
+                             dplyr::summarize(median_mu_freq = median(mu_freq), .groups = "drop") %>%
+                             group_by(subject_id, HIV_status, gex_annotation_final) %>%
+                             dplyr::reframe(tissue_delta_median = median_mu_freq[tissue == "CSF"] - median_mu_freq[tissue == "PBMC"])
+
+# Compute p-values by group (ignoring HIV_status)
+pvalues <- delta_tissue_mu_freq %>%
+  group_by(gex_annotation_final) %>%
+  summarise(
+    p_value = if (all(table(HIV_status) > 1)) wilcox.test(tissue_delta_median ~ HIV_status)$p.value else NA_real_,
+    .groups = "drop") 
+
+# Compute median, Q1, and Q3 for each group by HIV_status
+summaries <- delta_tissue_mu_freq %>% 
+  group_by(gex_annotation_final, HIV_status) %>%
+  summarise(
+    median_mu_freq_median = median(tissue_delta_median),
+    Q1 = quantile(tissue_delta_median, 0.25),
+    Q3 = quantile(tissue_delta_median, 0.75),
+    .groups = "drop")
+
+# Join the two tables by gex_annotation_final and tissue
+combined_table <- left_join(summaries, pvalues, by = c("gex_annotation_final"))
+combined_table
+```
+
+### Comparison by cluster and isotype
+
+```{r}
+# prepare table
+data_mu_freq_clust_iso_PWH_ctrl <- bcr_heavy %>% dplyr::filter(isotype_group != "IgE") %>%
+                                    dplyr::filter(gex_annotation_final %in% c("MBC class-switched")) %>%
+                                    group_by(subject_id, HIV_status, tissue, gex_annotation_final, isotype_group) %>%
+                                    dplyr::summarize(median_mu_freq = median(mu_freq), .groups = "drop")
+
+# Compute p-values by group (ignoring HIV_status)
+pvalues <- data_mu_freq_clust_iso_PWH_ctrl %>%
+  group_by(gex_annotation_final, tissue, isotype_group) %>%
+  summarise(
+    p_value = if (all(table(HIV_status) > 1)) wilcox.test(median_mu_freq ~ HIV_status)$p.value else NA_real_,
+    .groups = "drop") 
+
+# Compute median, Q1, and Q3 for each group by HIV_status
+summaries <- data_mu_freq_clust_iso_PWH_ctrl %>% 
+  group_by(gex_annotation_final, HIV_status, tissue, isotype_group) %>%
+  summarise(
+    median_mu_freq_median = median(median_mu_freq),
+    Q1 = quantile(median_mu_freq, 0.25),
+    Q3 = quantile(median_mu_freq, 0.75),
+    .groups = "drop")
+
+# Join the two tables by gex_annotation_final and tissue
+combined_table <- left_join(summaries, pvalues, by = c("gex_annotation_final", "tissue", "isotype_group"))
+combined_table
+```
+
+```{r}
+# treated PWH and controls
+data_mu_freq_clust_iso_PWH_ctrl <- bcr_heavy %>% 
+                                    dplyr::filter(gex_annotation_final %in% c("MBC class-switched")) %>%
+                                    group_by(subject_id, HIV_status, tissue, gex_annotation_final, isotype_group) %>%
+                                    dplyr::summarize(median_mu_freq = median(mu_freq), .groups = "drop") %>%
+                                    group_by(isotype_group, gex_annotation_final, HIV_status, subject_id) %>%
+                                    dplyr::reframe(delta_median_mu_freq = median_mu_freq[tissue == "CSF"] - median_mu_freq[tissue == "PBMC"])
+
+# Compute p-values by group (ignoring HIV_status)
+pvalues <- data_mu_freq_clust_iso_PWH_ctrl %>%
+  group_by(gex_annotation_final, isotype_group) %>%
+  summarise(
+    p_value = if (all(table(HIV_status) > 1)) wilcox.test(delta_median_mu_freq ~ HIV_status)$p.value else NA_real_,
+    .groups = "drop") 
+
+# Compute median, Q1, and Q3 for each group by HIV_status
+summaries <- data_mu_freq_clust_iso_PWH_ctrl %>% 
+  group_by(gex_annotation_final, HIV_status, isotype_group) %>%
+  summarise(
+    median_mu_freq_median = median(delta_median_mu_freq),
+    Q1 = quantile(delta_median_mu_freq, 0.25),
+    Q3 = quantile(delta_median_mu_freq, 0.75),
+    .groups = "drop")
+
+# Join the two tables by gex_annotation_final and tissue
+combined_table <- left_join(summaries, pvalues, by = c("gex_annotation_final", "isotype_group"))
+combined_table
+```
+
+```{r}
+# remove objects
+rm(data_mu_freq_clust_iso_PWH_ctrl, data_mu_freq_clust_PWH_ctrl, data_mu_freq_iso_PWH_ctrl, delta_tissue_mu_freq)
+```
+
+## Epitope Specificity
+
+```{r}
+# load IEDB epitotope sequences for HIV downloaded here: https://www.iedb.org/
+aa_seq_IEDB_heavy <- read.csv(header = TRUE, "./receptor_table_export_1730925113.csv") %>% #   HIV_epitopes_IEDB.csv
+  dplyr::select(organism, molecule, chain1_vgene, chain1_jgene, chain1_cdr3_aa, chain2_vgene, chain2_jgene, chain2_cdr3_aa) %>% 
+  mutate(chain1_vgene = getGene(chain1_vgene, first = FALSE, collapse = TRUE, strip_d = TRUE),
+         chain1_jgene = getGene(chain1_jgene, first = FALSE, collapse = TRUE, strip_d = TRUE))
+
+# subset data to MBC heavy chains and separate ambiguous v and j calls
+seq_to_check <- bcr_data %>% 
+  dplyr::filter(locus == "IGH") %>%
+  #dplyr::filter(gex_annotation_final %in% c("MBC class-unswitched", "MBC class-switched")) %>% 
+  dplyr::select(cell_id_unique, v_call, j_call, junction_aa, locus) %>%
+  separate_rows(v_call, sep = ",") %>% 
+  separate_rows(j_call, sep = ",") %>% 
+  mutate(junction_aa = substr(junction_aa, 2, nchar(junction_aa) - 1)) %>%
+  dplyr::rename(cdr3_aa = junction_aa) %>%
+  mutate(v_call = getGene(v_call, first = FALSE, collapse = TRUE, strip_d = TRUE),
+         j_call = getGene(j_call, first = FALSE, collapse = TRUE, strip_d = TRUE))
+
+# match data with IEDB epitopes
+seq_to_check_VJ_match <- seq_to_check %>% 
+  inner_join(aa_seq_IEDB_heavy, by = join_by("v_call" == "chain1_vgene", "j_call" == "chain1_jgene"), relationship = "many-to-many") %>% 
+  distinct() %>%
+  dplyr::filter(nchar(cdr3_aa) == nchar(chain1_cdr3_aa))
+
+# Calculate sequence distance for each row
+seq_to_check_VJ_match <- seq_to_check_VJ_match %>%
+  rowwise() %>% # apply function row-wise
+  mutate(seq_distance = seqDist(cdr3_aa, chain1_cdr3_aa, dist_mat = getAAMatrix()),
+         seq_distance_norm = seq_distance/nchar(cdr3_aa)) %>% # calculate distance
+  ungroup()
+
+# find sequence with low distance
+seq_match_select <- seq_to_check_VJ_match %>% dplyr::filter(seq_distance < 3)
+
+# check for light chain similarity
+seq_to_check <- bcr_data %>% 
+  dplyr::filter(locus != "IGH" & cell_id_unique %in% seq_match_select$cell_id_unique) %>%
+  dplyr::select(cell_id_unique, v_call, j_call, junction_aa, locus) %>%
+  separate_rows(v_call, sep = ",") %>% 
+  separate_rows(j_call, sep = ",") %>% 
+  mutate(junction_aa = substr(junction_aa, 2, nchar(junction_aa) - 1)) %>%
+  dplyr::rename(cdr3_aa = junction_aa) %>%
+  mutate(v_call = getGene(v_call, first = FALSE, collapse = TRUE, strip_d = TRUE),
+         j_call = getGene(j_call, first = FALSE, collapse = TRUE, strip_d = TRUE))
+
+seq_to_check_VJ_match_light <- seq_match_select %>%
+  mutate(chain2_vgene = getGene(chain2_vgene, first = FALSE, collapse = TRUE, strip_d = TRUE),
+         chain2_jgene = getGene(chain2_jgene, first = FALSE, collapse = TRUE, strip_d = TRUE)) %>%
+  inner_join(aa_seq_IEDB_heavy, by = join_by("v_call" == "chain2_vgene", "j_call" == "chain2_jgene"), relationship = "many-to-many") %>% 
+  distinct() %>%
+  dplyr::filter(nchar(cdr3_aa) == nchar(chain2_cdr3_aa))
+
+# remove objects
+rm(aa_seq_IEDB_heavy, seq_to_check, seq_to_check_VJ_match, seq_match_select, seq_to_check_VJ_match_light)
+```

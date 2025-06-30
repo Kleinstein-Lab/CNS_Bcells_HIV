@@ -1,0 +1,147 @@
+## Subclustering GEX analysis of B cells
+
+### Load IG/TR genes to be removed from variable features
+
+```{r}
+# read in IG/TR features pulled from Ensembl 103 using biomaRt
+load(file.path("QC_features_meta_human.RData"))
+
+# create objects with genes to exclude
+biotypes_excl <- unique(features_meta[["gene_biotype"]])[grepl(pattern = "^IG_|^TR_",
+                                                               x = unique(features_meta[["gene_biotype"]]))]
+remove_genes <- features_meta[["external_gene_name"]][features_meta[["gene_biotype"]] %in% biotypes_excl]
+```
+
+### Subsetting and reprocessing of B cells
+
+```{r}
+# subset for B cells
+gex_choroid_B <- subset(gex_choroid_supppresed, subset = annotated_clusters == "B_cells")
+
+# reprocess B cell object
+gex_choroid_B <- NormalizeData(gex_choroid_B, normalization.method = "LogNormalize", scale.factor = 10000, verbose = FALSE)
+gex_choroid_B <- FindVariableFeatures(gex_choroid_B, selection.method = "vst", nfeatures = 2000, verbose = FALSE)
+gex_choroid_B <- ScaleData(gex_choroid_B, verbose = FALSE)
+
+# remove Ig and Tr genes before clustering
+bool_remove_genes <- VariableFeatures(gex_choroid_B) %in% remove_genes
+VariableFeatures(gex_choroid_B) <- VariableFeatures(gex_choroid_B)[!bool_remove_genes]
+cat("After removing IG/TR genes, the total number of variable features is:", length(VariableFeatures(gex_choroid_B)), "\n")
+
+# dimensionality reduction and clustering
+gex_choroid_B <- RunPCA(gex_choroid_B, npcs = 70)
+gex_choroid_B <- RunUMAP(gex_choroid_B, dims = 1:50, reduction = "harmony", reduction.name = "umap.harmony")
+
+# clustering
+gex_choroid_B <- FindNeighbors(gex_choroid_B, dims = 1:50, reduction = "harmony")
+gex_choroid_B <- FindClusters(gex_choroid_B, resolution = seq(0.1, 1.6, 0.1))
+
+# check for batch effects
+DimPlot(gex_choroid_B, group.by = "seurat_clusters", reduction = "umap.harmony")
+
+# remove objects
+rm(biotypes_excl, remove_genes, bool_remove_genes, features_meta)
+```
+
+### Clustree
+
+```{r}
+clustree(gex_choroid_B, prefix = 'RNA_snn_res.', node_text_size = 3) + 
+  labs (title = "Clustering Tree of B cells in Choroid Plexus data") +
+  scale_color_manual(values = col_clustree) + 
+  theme(plot.title = element_text(hjust = 0.5))
+```
+
+```{r}
+# set resolution
+Idents(gex_choroid_B) <- gex_choroid_B$RNA_snn_res.0.7
+gex_choroid_B$seurat_clusters <- gex_choroid_B$RNA_snn_res.0.7
+```
+
+### UMAP
+
+```{r}
+# check clustering
+DimPlot(gex_choroid_B, reduction = "umap.harmony", group.by = "seurat_clusters", raster = FALSE, label = TRUE, label.box = FALSE) +
+        scale_fill_manual(values = rep("#FFFFFF", length(gex_choroid_B$seurat_clusters))) +
+        NoLegend()
+
+# doublets
+DimPlot(gex_choroid_B, reduction = "umap.harmony", group.by = "seurat_clusters", raster = FALSE, label = TRUE, 
+         cells.highlight = gex_choroid_B$cell_id_unique[gex_choroid_B$doublet_def == "doublet"], sizes.highlight = 0.5) + 
+  scale_color_manual(values = c("Unselected" = "grey", "Group_1" = "red"),
+                     labels = c("Unselected" = "Singlets", "Group_1" = "Doublets")) +
+  ggtitle("Doublets after integration", subtitle = "Only doublets in (unintegrated) B cell cluster kept") + 
+  theme(axis.title = element_text(hjust = 0.5), plot.subtitle = element_text(hjust = 0.5))
+```
+
+### Cell type annotation (manual)
+
+#### Set B cell marker genes
+
+```{r}
+# load B cell marker library
+markers_b <- read.csv(header = TRUE, file = "markers_B.csv")
+```
+
+#### Plot B cell markers
+
+```{r}
+p <- DotPlot(gex_choroid_B, cluster.idents = TRUE, group.by = "seurat_clusters",
+        features = unique(markers_b$Marker)) %>%
+  add_info_bar(method = "join", 
+               info_type = "Cell_Type",
+               info = markers_b %>%
+                 dplyr::select(Cell_Type, Marker) %>%
+                 dplyr::rename(features.plot = Marker),
+               text_size = 6, label = FALSE) + RotatedAxis() +
+  theme(strip.text.x = element_text(size = 12)) +
+  ggtitle("All B cell markers")
+
+# plot side metrics
+plot_dot_side(p, gex_choroid_B, row_identity = "seurat_clusters",
+              facet_col = "Cell_Type", info_to_add = c("cluster_size"))
+```
+
+#### Assign cluster annotations
+
+```{r}
+# annotations - resol 0.5
+annotations_B_general <- rbind(c("0", "Plasma_cells"),        
+                             c("1", "B cells"),           
+                             c("2", "B cells"),             
+                             c("3", "B cells"))           
+colnames(annotations_B_general) <- c("Cluster", "CellType")
+annotations_B_general <- data.frame(annotations_B_general)
+
+# create object to use in RenameIdents
+annotated_clusters_B <- setNames(annotations_B_general$CellType, annotations_B_general$Cluster)
+
+# Rename Idents
+Idents(gex_choroid_B) <- gex_choroid_B$seurat_clusters
+gex_choroid_B <- RenameIdents(gex_choroid_B, annotated_clusters_B)
+gex_choroid_B[["annotated_clusters_B"]] <- Idents(gex_choroid_B)
+gex_choroid_B@meta.data$annotated_clusters_B <- factor(gex_choroid_B@meta.data$annotated_clusters_B, levels = sort(as.character(unique(gex_choroid_B@meta.data$annotated_clusters_B))))
+
+# remove unnecessary objects
+rm(annotations_B_general, annotated_clusters_B)
+```
+
+```{r}
+# remove viremic participants
+gex_choroid_B_suppressed <- subset(gex_choroid_B, subset = HIV_status_det == "HIV_viremic", invert = TRUE)
+
+# rerun UMAP for better visualization after filtering
+gex_choroid_B_suppressed <- RunUMAP(gex_choroid_B_suppressed, reduction = "harmony", dims = 1:50)
+```
+
+```{r}
+# plot UMAP with annotations
+DimPlot(gex_choroid_B_suppressed, reduction = "umap.harmony", group.by = "annotated_clusters_B", raster = FALSE, label = TRUE, label.box = TRUE) +
+        scale_fill_manual(values = rep("#FFFFFF", length(gex_choroid_B_suppressed$seurat_clusters))) +
+        labs(title = "B Cells in Choroid Plexus") +
+        NoLegend()
+
+# calculate cell numbers
+gex_choroid_B_suppressed@meta.data %>% group_by(annotated_clusters_B, HIV_status, subject_id) %>% summarize(count = n()) %>% kable() %>% kable_styling("striped")
+```

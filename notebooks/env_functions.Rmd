@@ -1,0 +1,1421 @@
+## Packages
+
+```{r}
+# load packages
+packages <- c("tidyverse", "scales", "rlang", "magrittr", "ggpubr",               # data tidying and base packages
+              "ggplot2", "patchwork", "pheatmap", "ggVennDiagram",                # visualization and plotting
+              "Seurat", "clustree", "scDblFinder", "Azimuth", "clusterProfiler",  # gene expression analysis
+              "airr", "alakazam", "shazam", "scoper", "dowser")                   # airr analysis
+for (n in 1:length(packages)) {
+    suppressPackageStartupMessages(library(packages[n], character.only = TRUE))
+    cat(paste0(packages[n], ": ", packageVersion(packages[n]), "\n"))
+}
+
+# remove objects
+rm(n, packages)
+```
+
+## Paths
+
+```{r}
+# assign important paths
+path_objs <- file.path("..", "objects")
+path_data_GEX <- file.path("data", "cellranger", "gex")
+path_ref_genes <- file.path("..", "reference_genes")
+path_airr_BCR <- file.path("..", "data", "airrflow", "bcr", "clonal_analysis", "define_clones")
+```
+
+## Colors and themes
+
+```{r colors}
+col_tissue <- c("PBMC" = "#fcbba1", "CSF" = "#c6dbef")
+col_choroid <- c("darkgreen")
+col_clustree <- setNames(pals::stepped2(n = 20), nm = seq(0.1, 1.6, 0.1))
+col_isotype <- c("IGHD" = "#ef6548", "IGHM" = "#fec44f", "IGHE" = "#810f7c", "NA" = "lightgrey",
+                  "IGHG1" = "#08519c", "IGHG2" = "#3182bd", "IGHG3" = "#6baed6", "IGHG4" = "#bdd7e7",
+                  "IGHA1" = "#31a354", "IGHA2" = "#a1d99b")
+col_isotype_group <- c("IgD" = "red", "IgM" = "#fe9929", "IgE" = "#810f7c", "NA" = "lightgrey",
+                  "IgG" = "darkblue", "IgA" = "darkgreen")
+col_locus <- c("IGH" = "#8856a7", "IGK" = "#a6bddb", "IGL" = "#a8ddb5")
+col_HIV_status <- c("control" = "#c7e9c0", "PWH" = "#bcbddc")
+col_HIV_status_PCA <- c("control" = "#41ab5d", "PWH" = "#9e9ac8")
+
+# define colors for each individual
+extended_palette <- colorRampPalette(RColorBrewer::brewer.pal(12, "Set3"))
+col_subj <- extended_palette(18)
+values <- unique(gex_valid$subject_id)
+names(col_subj) <- values[1:length(col_subj)]
+rm(extended_palette, values)
+```
+
+```{r}
+theme_bw <- theme_bw() + 
+              theme(panel.grid.major.x = element_blank(),
+                    panel.grid.major.y = element_line(color = "grey75",
+                                                      linewidth = 0.2))
+
+labels_rotate_x <- theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+labels_standard <- theme(plot.title = element_text(size = 15, hjust = 0.5),
+                         plot.subtitle = element_text(size = 12, hjust = 0.5),
+                         plot.caption = element_text(size = 7),
+                         axis.title = element_text(size = 9),
+                         axis.text = element_text(size = 8),
+                         legend.title = element_text(size = 10),
+                         legend.text = element_text(size = 8))
+
+clean_umap <- theme(plot.title = element_text(hjust = 0.5),
+                    axis.text = element_blank(),
+                    axis.ticks = element_blank())
+```
+
+## Functions
+## Metadata summarization
+
+```{r}
+summarize_meta <- function(df, 
+                           remove_vars = NULL, 
+                           group_var,                 
+                           cont_method = "wilcox",    # "wilcox" (default) or "t.test"
+                           cat_method = "dynamic",    # "dynamic" (default), "chisq", or "fisher"
+                           chi_correct = TRUE         # For chi-square: enable (TRUE) or disable (FALSE) Yate's continuity correction
+                           ) {
+  # Remove unwanted variables if provided
+  if (!is.null(remove_vars)) {
+    df <- df %>% dplyr::select(-all_of(remove_vars))
+  }
+  
+  # Check that the grouping variable exists
+  if (!group_var %in% names(df)) {
+    stop("The grouping variable ", group_var, " is not found in the dataframe.")
+  }
+  
+  ### Helper functions ###
+  # Continuous variable summary: calculates median (Q1–Q3) per group.
+  summarize_continuous <- function(data, var, group_var) {
+    data %>%
+      group_by(across(all_of(group_var))) %>%
+      summarise(
+        Median = median(.data[[var]], na.rm = TRUE),
+        Q1 = quantile(.data[[var]], 0.25, na.rm = TRUE),
+        Q3 = quantile(.data[[var]], 0.75, na.rm = TRUE),
+        .groups = "drop"
+      ) %>%
+      mutate(Statistic = paste0(Median, " (", Q1, "-", Q3, ")")) %>%
+      dplyr::select(all_of(group_var), Statistic)
+  }
+  
+  # Categorical variable summary: excludes NAs and creates a "Label" column (the level).
+  categorical_summary <- function(data, var, group_var) {
+    data %>%
+      filter(!is.na(.data[[var]])) %>%  # Exclude NA values
+      group_by(Label = .data[[var]], across(all_of(group_var))) %>%
+      summarise(n = n(), .groups = "drop") %>%
+      group_by(across(all_of(group_var))) %>%
+      mutate(perc = round(100 * n / sum(n), 1)) %>%
+      ungroup() %>%
+      mutate(Percentage = paste0(n, " (", perc, "%)")) %>%
+      dplyr::select(Label, all_of(group_var), Percentage)
+  }
+  
+  ### Main Loop ###
+  # Get all variables except the grouping variable
+  vars_to_summarize <- setdiff(names(df), group_var)
+  
+  # Initialize a list to collect summary outputs
+  summary_list <- list()
+  
+  for (var in vars_to_summarize) {
+    if (is.numeric(df[[var]])) {
+      # --- Continuous variable ---
+      cont_sum <- summarize_continuous(df, var, group_var) %>%
+        pivot_wider(names_from = all_of(group_var), values_from = Statistic)
+      
+      # Prepare data for statistical test (exclude missing values)
+      tmp <- df %>%
+        dplyr::select(all_of(c(var, group_var))) %>%
+        filter(!is.na(.data[[var]]), !is.na(.data[[group_var]]))
+      
+      # Check that exactly two groups are present and each has at least one observation
+      if (length(unique(tmp[[group_var]])) == 2 && all(table(tmp[[group_var]]) > 0)) {
+        if (cont_method == "wilcox") {
+          test_result <- tryCatch(
+            wilcox.test(as.formula(paste(var, "~", group_var)), data = tmp),
+            error = function(e) NULL
+          )
+          test_name <- "Wilcoxon rank-sum"
+        } else if (cont_method == "t.test") {
+          test_result <- tryCatch(
+            t.test(as.formula(paste(var, "~", group_var)), data = tmp),
+            error = function(e) NULL
+          )
+          test_name <- "t-test"
+        } else {
+          test_result <- NULL
+          test_name <- NA
+        }
+        p_val <- if (!is.null(test_result)) test_result$p.value else NA
+      } else {
+        p_val <- NA
+        test_name <- NA
+      }
+      
+      # If no p-value was calculated, then remove the test name.
+      if (is.na(p_val)) {
+        test_name <- NA
+      }
+      
+      cont_sum <- cont_sum %>%
+        mutate(Variable = var,
+               Label = NA,
+               Type = "Continuous",
+               p_value = p_val,
+               Test = test_name) %>%
+        dplyr::select(Variable, Label, Type, everything())
+      
+      summary_list[[var]] <- cont_sum
+      
+    } else {
+      # --- Categorical variable ---
+      cat_sum <- categorical_summary(df, var, group_var) %>%
+        pivot_wider(names_from = all_of(group_var), values_from = Percentage)
+      
+      # Build contingency table using non-NA rows for both the variable and group.
+      df_subset <- df %>% filter(!is.na(.data[[var]]), !is.na(.data[[group_var]]))
+      tab <- table(df_subset[[var]], df_subset[[group_var]])
+      
+      # Check that each group (each column in the table) has at least one observation.
+      if (any(colSums(tab) == 0)) {
+        p_val <- NA
+        test_name <- NA
+      } else {
+        if (cat_method == "dynamic") {
+          # Use chi-square if every cell has at least 5; otherwise, use Fisher's exact.
+          if (all(tab >= 5)) {
+            test_result <- tryCatch(chisq.test(tab, correct = chi_correct), error = function(e) NULL)
+            test_name <- "Chi-square"
+          } else {
+            test_result <- tryCatch(fisher.test(tab), error = function(e) NULL)
+            test_name <- "Fisher's exact"
+          }
+        } else if (cat_method == "chisq") {
+          test_result <- tryCatch(chisq.test(tab, correct = chi_correct), error = function(e) NULL)
+          test_name <- "Chi-square"
+        } else if (cat_method == "fisher") {
+          test_result <- tryCatch(fisher.test(tab), error = function(e) NULL)
+          test_name <- "Fisher's exact"
+        } else {
+          test_result <- NULL
+          test_name <- NA
+        }
+        p_val <- if (!is.null(test_result)) test_result$p.value else NA
+      }
+      
+      if (is.na(p_val)) {
+        test_name <- NA
+      }
+      
+      cat_sum <- cat_sum %>%
+        mutate(Variable = var,
+               Type = "Categorical",
+               p_value = p_val,
+               Test = test_name) %>%
+        dplyr::select(Variable, Label, Type, everything())
+      
+      summary_list[[var]] <- cat_sum
+    }
+  }
+  
+  # Combine all summaries into one final table and arrange the rows.
+  summary_table <- bind_rows(summary_list) %>%
+    arrange(Type, Variable, Label)
+  
+  return(summary_table)
+}
+```
+
+
+## Quality control
+
+### Metrics summary for cellranger count output
+
+```{r}
+create_metrics_summary_count <- function(meta, path_data_specific,
+                                   data_types, samples_list) {
+  metrics_summary <- tibble()
+  if (missing(data_types)) data_types <- unique(meta$data_type)
+  if (missing(samples_list)) samples_list <- sort(unique(meta$sample_name))
+
+  for (sample in samples_list) {
+    for (data_type in data_types) {
+      # metadata info
+      meta_sample <- dplyr::filter(meta, sample_name == sample, data_type == data_type)
+      subject_id <- unique(meta_sample$subject_id)
+      tissue <- unique(meta_sample$tissue)
+
+      # read in the summary table
+      data <- read_csv(file.path(path_data_specific, meta_sample$sample_name,
+                                 "outs", 
+                                 "metrics_summary.csv"),
+                       show_col_types = FALSE)
+
+      # set the columns of interest
+      estimated_number_of_cells <- data[["Estimated Number of Cells"]]
+      num_reads <- data[["Number of Reads"]] # Number of Read Pairs (VDJ), Number of Reads (GEX)
+      reads_per_cell <- data[["Mean Reads per Cell"]]
+      median_genes <- data[["Median Genes per Cell"]] # GEX only
+      total_genes <- data[["Total Genes Detected"]]
+      valid_barcodes <- data[["Valid Barcodes"]]
+      UMI_counts_cell <- data[["Median UMI Counts per Cell"]]
+      reads_in_cells <- data[["Fraction Reads in Cells"]]
+      Q30_bases_in_read <- data[["Q30 Bases in RNA Read"]]
+      seq_saturation <- data[["Sequencing Saturation"]]
+      intronic <- data[["Reads Mapped Confidently to Intronic Regions"]]
+      exonic <- data[["Reads Mapped Confidently to Exonic Regions"]]
+      transcriptome_map <- data[["Reads Mapped Confidently to Transcriptome"]]
+      antisense <- data[["Reads Mapped Antisense to Gene"]]
+      
+      # update the combined summary table
+      metrics_summary <- bind_rows(metrics_summary,
+                                   tibble(sample, subject_id, tissue, estimated_number_of_cells,
+                                          num_reads, reads_per_cell, reads_in_cells, median_genes,
+                                          total_genes, valid_barcodes, UMI_counts_cell, seq_saturation, 
+                                          Q30_bases_in_read, intronic, exonic, transcriptome_map, 
+                                          antisense, data_type))
+    }
+  }
+
+  colnames(metrics_summary) <- c("sample_name", "subject_id", "tissue", "EstimatedNumberofCells",
+                                 "NumberofReads", "MeanReadsPerCell", "ReadsInCells", "MedianGenesPerCell",
+                                 "TotalGenes", "ValidBarcodes", "MedianUMIPerCell", "SeqSaturation", 
+                                 "Q30basesInRead", "IntronicRegions", "ExonicRegions", "TranscriptomeMapping", 
+                                 "AntisenseMapping", "data_type")
+  return(metrics_summary)
+}
+```
+
+### Metrics summary for cellranger ARC output
+
+```{r}
+create_metrics_summary_arc <- function(meta, path_data_specific,
+                                   data_types, samples_list) {
+  metrics_summary <- tibble()
+  if (missing(data_types)) data_types <- unique(meta$data_type)
+  if (missing(samples_list)) samples_list <- sort(unique(meta$sample_name))
+
+  for (sample in samples_list) {
+    for (data_type in data_types) {
+      # metadata info
+      meta_sample <- dplyr::filter(meta, sample_name == sample, data_type == data_type)
+      subject_id <- unique(meta_sample$subject_id)
+      tissue <- unique(meta_sample$tissue)
+
+      # read in the summary table
+      data <- read_csv(file.path(path_data_specific, meta_sample$sample_name,
+                                 "summary.csv"),
+                       show_col_types = FALSE)
+
+      # set the columns of interest
+      estimated_number_of_cells <- data[["Estimated number of cells"]]
+      num_reads <- data[["GEX Sequenced read pairs"]] # Number of Read Pairs (VDJ), Number of Reads (GEX)
+      reads_per_cell <- data[["GEX Mean raw reads per cell"]]
+      median_genes <- data[["GEX Median genes per cell"]] 
+      total_genes <- data[["GEX Total genes detected"]] 
+      valid_barcodes <- data[["GEX Valid barcodes"]]
+      valid_UMI <- data[["GEX Valid UMIs"]] 
+      UMI_counts_cell <- data[["GEX Median UMI counts per cell"]] 
+      reads_in_cells <- data[["GEX Fraction of transcriptomic reads in cells"]]
+      Q30_bases_in_read_2 <- data[["GEX Q30 bases in read 2"]]
+      exonic <- data[["GEX Reads mapped confidently to exonic regions"]]
+      intronic <- data[["GEX Reads mapped confidently to intronic regions"]]
+      transcriptome_map <- data[["GEX Reads mapped confidently to transcriptome"]]
+      antisense <- data[["GEX Reads mapped antisense to gene"]]
+      
+      # update the combined summary table
+      metrics_summary <- bind_rows(metrics_summary,
+                                   tibble(sample, subject_id, tissue, estimated_number_of_cells,
+                                          num_reads, reads_per_cell, reads_in_cells, median_genes,
+                                          total_genes, valid_barcodes, valid_UMI, UMI_counts_cell, 
+                                          Q30_bases_in_read_2, intronic, exonic, transcriptome_map, 
+                                          antisense, data_type))
+    }
+  }
+
+  colnames(metrics_summary) <- c("sample_name", "subject_id", "tissue", "EstimatedNumberofCells",
+                                 "NumberofReads", "MeanReadsPerCell", "ReadsInCells", "MedianGenesPerCell",
+                                 "TotalGenes", "ValidBarcodes", "ValidUMI", "MedianUMIPerCell", 
+                                 "Q30basesRead2", "IntronicRegions", "ExonicRegions", "TranscriptomeMapping", 
+                                 "AntisenseMapping", "data_type")
+  return(metrics_summary)
+}
+```
+
+
+## General plots
+
+### Bar plots with stacked percentages
+
+```{r}
+calc_pcts <- function(data, meta_group_by = c("sample_name", "batch"),
+                      focus_group) {
+  data %>%
+    group_by(across(all_of(meta_group_by)), !!sym(focus_group)) %>%
+    summarize(Count = n(), .groups = "drop_last") %>%
+    dplyr::rename(focus = !!sym(focus_group)) %>%
+    complete(focus = unique(data[[focus_group]]), fill = list(Count = 0)) %>%
+    mutate(Percent = 100 * Count / sum(Count)) %>%
+    dplyr::rename(!!sym(focus_group) := focus) %>%
+    ungroup()
+}
+```
+
+```{r}
+plot_pcts <- function(pcts, tissue_type, clrs_specific,
+                      plot_type = "All", plot_value = "Cell Type",
+                      x_axis = "sample_name", x_axis_label = "Sample",
+                      count_by = c("sample_name", "tissue"),
+                      fill_type = "annotated_clusters", fill_label = fill_type,
+                      perc_min = 3, label_size = 3, label_fill = FALSE,
+                      drop_zeroes = TRUE, details = NULL, draw_border = TRUE,
+                      remove_pct = FALSE, remove_count = FALSE) {
+  # if you want to use the default Seurat colors
+  if (is_missing(clrs_specific))
+    clrs_specific <- hue_pal()(n_distinct(pcts %>%
+                                            ungroup() %>%
+                                            dplyr::select(all_of(fill_type))))
+
+  # mainly affects the legend
+  if (drop_zeroes) pcts <- dplyr::filter(pcts, Percent != 0)
+
+  # set up the plotting layers properly
+  if (plot_type == "All") {
+    # add the total counts to the data
+    pcts <- pcts %>%
+              group_by(across(all_of(count_by))) %>%
+              mutate(Total = sum(Count), Total = replace(Total, -n(), ""))
+  }
+  else if (plot_type == "Binary") {
+    # so that TRUE plots on top of FALSE
+    pcts[[fill_type]] <- factor(pcts[[fill_type]], levels = c(TRUE, FALSE))
+  }
+  else {
+    stop("Please enter a valid plot type.")
+  }
+
+  # set up the plot with conditional border drawing
+  p <- ggplot(data = pcts,
+              aes(x = !!sym(x_axis), y = Percent, fill = !!sym(fill_type))) +
+        geom_bar(stat = "identity", 
+                 color = if (draw_border) "black" else NA,
+                 linewidth = if (draw_border) 0.2 else 0) +
+        labs(title = paste("Percent of", plot_value, "per", x_axis_label),
+             subtitle = details,
+             x = x_axis_label, y = paste(plot_value, "Percentage"),
+             fill = fill_label)
+
+  # add aesthetics
+  p <- p + scale_fill_manual(values = clrs_specific, limits = force) +
+           scale_y_continuous(labels = label_percent(scale = 1),
+                              expand = expansion(mult = 0.05))
+
+  # add percentage labels only if remove_pct is FALSE
+  if (!remove_pct) {
+    if (!label_fill) {
+      p <- p + geom_text(aes(label = label_percent(accuracy = 1, scale = 1)(
+                                 ifelse(Percent > perc_min, Percent, NA)),
+                             group = !!sym(fill_type)),
+                         size = label_size,
+                         position = position_stack(vjust = 0.5))
+    }
+    else {
+      p <- p + geom_label(aes(label = ifelse(Percent > perc_min,
+                                             percent(Percent, accuracy = 1, scale = 1),
+                                             NA),
+                              group = !!sym(fill_type)),
+                          color = "black", fill = "white",
+                          size = label_size,
+                          position = position_stack(vjust = 0.5))
+    }
+  }
+
+  # add count text only if remove_count is FALSE
+  if (!remove_count) {
+    if (plot_type == "All") {
+      p <- p + geom_text(mapping = aes(x = !!sym(x_axis), y = 100,
+                                       label = Total, fill = NULL),
+                         vjust = -0.5, color = "black", size = label_size)
+    }
+    else if (plot_type == "Binary") {
+      p <- p +
+            # counts on top
+            geom_text(mapping = aes(label = ifelse(!!sym(fill_type) == TRUE,
+                                                   Count, "")),
+                      position = position_stack(), vjust = -0.5,
+                      color = "black", size = label_size) +
+            # counts on bottom
+            geom_text(mapping = aes(label = ifelse(!!sym(fill_type) == FALSE,
+                                                   Count, ""), y = -1),
+                      color = "black", size = label_size)
+    }
+  }
+
+  # add remaining styling
+  p <- p + theme_bw + labels_standard
+
+  # only rotate long names
+  if (x_axis %in% c("sample_name",
+                    "annotated_clusters", "annotated_subclusters")) {
+    p <- p + labels_rotate_x
+  }
+
+  return(p)
+}
+```
+
+### Top info bar
+
+```{r}
+add_info_bar <- function(plot, method = "contains", info_type, info,
+                         text_size = 8, label = TRUE) {
+  # add the information to the plot data if needed
+  if (method == "add") {
+    plot$data[info_type] <- info[[info_type]]
+  }
+  else if (method == "join") {
+    plot$data <- suppressMessages(left_join(plot$data, info, # by = {{info_type}},
+                                            multiple = "all",
+                                            relationship = "many-to-many"))
+  }
+
+  # explain the label or not
+  if (label) labels <- purrr::partial(label_both, sep = " ")
+  else labels <- labeller()
+
+  # split up the plot
+  plot + facet_grid(cols = vars(!!sym(info_type)),
+                    scales = "free_x", space = "free", labeller = labels) +
+    theme(strip.text.x = element_text(size = text_size))
+}
+```
+
+### Dot plot with side info
+
+```{r}
+plot_dot_side <- function(plot, seurat_obj, row_identity = "seurat_clusters",
+                          facet_col, info_to_add = c("cluster_size")) {
+  # get the clusters in order
+  row_idents <- levels(plot$data$id)
+  side_labels <- data.frame("row_idents" = row_idents)
+
+  # calculate extra useful information
+  if ("cluster_size" %in% info_to_add) {
+    counts_sum <- seurat_obj[[]] %>%
+                    dplyr::count(!!sym(row_identity)) %>%
+                    arrange(factor(!!sym(row_identity), levels = row_idents)) %>%
+                    pull(n)
+
+    # reformat
+    counts_sum <- str_pad(string = as.character(counts_sum),
+                          width = max(nchar(counts_sum)),
+                          side = "left", pad = " ")
+
+    side_labels <- bind_cols(side_labels, "total counts" = counts_sum)
+  }
+
+  if ("mean_mu_freq" %in% info_to_add) {
+    mean_mu_freq <- seurat_obj[[]] %>%
+                      group_by(!!sym(row_identity)) %>%
+                      arrange(factor(!!sym(row_identity), levels = row_idents)) %>%
+                      mutate(mean_mu_freq = mean(mu_freq, na.rm = TRUE)) %>%
+                      distinct(mean_mu_freq) %>%
+                      pull()
+
+    # reformat
+    # mean_mu_freq <- sprintf("%.2f", mean_mu_freq)
+    mean_mu_freq <- label_percent(accuracy = 0.1)(mean_mu_freq)
+    mean_mu_freq <- replace_na(mean_mu_freq, replace = "NA")
+    mean_mu_freq <- str_pad(string = as.character(mean_mu_freq),
+                          width = max(nchar(mean_mu_freq)),
+                          side = "left", pad = " ")
+
+    side_labels <- bind_cols(side_labels, "mean mutation frequency" = mean_mu_freq)
+  }
+
+  if ("percent_BCR" %in% info_to_add) {
+    # needs more work
+    percent_BCR <- calc_pcts(data = seurat_obj[[]],
+                             meta_group_by = row_identity,
+                             focus_group = "contains_bcr") %>%
+                    dplyr::filter(contains_bcr) %>%
+                    # mutate(Percent = round(Percent, digits = 1)) %>%
+                    arrange(factor(!!sym(row_identity), levels = row_idents)) %>%
+                    pull(Percent)
+
+    # reformat
+    percent_BCR <- label_percent(accuracy = 1, scale = 1)(percent_BCR)
+    percent_BCR <- str_pad(string = as.character(percent_BCR),
+                           width = max(nchar(percent_BCR)),
+                           side = "left", pad = " ")
+
+    side_labels <- bind_cols(side_labels, "percent BCR" = percent_BCR)
+  }
+
+  if ("percent_TCR" %in% info_to_add) {
+    # needs more work
+    percent_TCR <- calc_pcts(data = seurat_obj[[]],
+                             meta_group_by = row_identity,
+                             focus_group = "contains_tcr") %>%
+                    dplyr::filter(contains_tcr) %>%
+                    # mutate(Percent = round(Percent, digits = 1)) %>%
+                    arrange(factor(!!sym(row_identity), levels = row_idents)) %>%
+                    pull(Percent)
+
+    # reformat
+    percent_TCR <- label_percent(accuracy = 1, scale = 1)(percent_TCR)
+    percent_TCR <- str_pad(string = as.character(percent_TCR),
+                           width = max(nchar(percent_TCR)),
+                           side = "left", pad = " ")
+
+    side_labels <- bind_cols(side_labels, "percent TCR" = percent_TCR)
+  }
+
+  if ("TRUST4" %in% info_to_add) {
+    # needs more work
+    percent_TRUST4 <- calc_pcts(data = seurat_obj[[]],
+                                meta_group_by = row_identity,
+                                focus_group = "TRUST4") %>%
+      dplyr::filter(TRUST4) %>%
+      # mutate(Percent = round(Percent, digits = 1)) %>%
+      arrange(factor(!!sym(row_identity), levels = row_idents)) %>%
+      pull(Percent)
+    
+    # reformat
+    percent_TRUST4 <- label_percent(accuracy = 1, scale = 1)(percent_TRUST4)
+    percent_TRUST4 <- str_pad(string = as.character(percent_TRUST4),
+                              width = max(nchar(percent_TRUST4)),
+                              side = "left", pad = " ")
+    
+    side_labels <- bind_cols(side_labels, "percent TRUST4" = percent_TRUST4)
+  }
+
+  # add info along the right side
+  subtitle_details <- side_labels %>%
+                        dplyr::select(-row_idents) %>%
+                        colnames() %>%
+                        str_c(collapse = " | ")
+  side_labels <- tidyr::unite(side_labels, col = "final_labels", -row_idents,
+                       sep = " | ") %>%
+                   pull(final_labels, name = row_idents)
+
+  if (missing(facet_col)) {
+    plot <- plot + facet_grid(rows = vars(id),
+                              labeller = labeller(id = side_labels),
+                              scales = "free", space = "free")
+  }
+  else {
+    plot <- plot + facet_grid(rows = vars(id), cols = vars(!!sym(facet_col)),
+                              labeller = labeller(id = side_labels),
+                              scales = "free", space = "free")
+  }
+
+  # final plot
+  plot +
+    labs(subtitle = subtitle_details) +
+    theme(strip.text.y = element_text(angle = 0, size = 8),
+          strip.background.y = element_rect(fill = "white"),
+          plot.subtitle = element_text(size = 9))
+}
+```
+
+## AIRR analysis in GEX
+
+### Mutation frequency
+
+```{r}
+plot_mu_freq <- function(seurat_obj, tissue_type,
+                         plot_label = TRUE, label_size = 4) {
+  # you need the NAs for the background
+  max_freq <- max(seurat_obj$mu_freq, na.rm = TRUE)
+  # for a consistent legend scale
+  max_freq <- round(max_freq, digits = 2)
+
+  # set up the plot
+  p <- FeaturePlot(seurat_obj, features = "mu_freq", pt.size = 0.2,
+                   order = TRUE, label = plot_label, label.size = label_size,
+                   raster = FALSE) +
+         labs(title = paste(tissue_type, "Mutation Frequencies"),
+              subtitle = paste0("Max: ", percent(max_freq), ", Mean: ",
+                                percent(mean(seurat_obj$mu_freq, na.rm = TRUE)))) +
+         scale_color_viridis_c(name = "Mutation Freq",
+                               labels = percent, direction = -1,
+                               option = "C", na.value = "lightgray",
+                               breaks = seq(0, max_freq, 0.05),
+                               limits = c(0, max_freq))
+
+  # standardize the labels
+  p <- p + labels_standard #+ NoLegend()
+  
+  return(p)
+}
+```
+
+### Mutation frequency of isotypes
+
+```{r}
+plot_mu_freq_isotype_overlay <- function(seurat_obj, isotypes, tissue_type) {
+  # you need the NAs for the background
+  obj <- subset(seurat_obj, isotype_group %in% isotypes | is.na(isotype_group))
+  max_freq <- max(seurat_obj$mu_freq, na.rm = TRUE) # for a consistent legend scale
+
+  # set up the plot
+  p <- FeaturePlot(obj, features = "mu_freq", pt.size = 0.2,
+                   order = TRUE, raster = FALSE, repel = TRUE) +
+         labs(title = paste0(tissue_type, " (", isotypes, ")"),
+              subtitle = paste0("Max: ", percent(max(obj$mu_freq, na.rm = TRUE)),
+                                ", Mean: ", percent(mean(obj$mu_freq, na.rm = TRUE)))) +
+         scale_color_viridis_c(name = "Mutation Freq",
+                               labels = percent, direction = -1,
+                               option = "C", na.value = "lightgray",
+                               breaks = seq(0, max_freq, 0.05),
+                               limits = c(0, max_freq))
+  
+  # standardize the labels
+  p <- p + labels_standard
+  
+  return(p)
+}
+```
+
+## Cell Frequencies
+
+```{r}
+calculateCellFrequencies <- function(sc_df, 
+                                     cluster_col, 
+                                     subject_col, 
+                                     vars_to_keep = NULL, 
+                                     show_clusters = NULL, 
+                                     denominator_clusters = NULL) {
+  # Load required package
+  if (!requireNamespace("dplyr", quietly = TRUE)) {
+    stop("The dplyr package is required but not installed. Please install it first.")
+  }
+  library(dplyr)
+  
+  # Define grouping variables for counting cells (numerator)
+  grouping_vars <- c(subject_col, cluster_col, vars_to_keep)
+  
+  # Calculate cell counts per subject-cluster (and additional groups if provided)
+  cell_counts <- sc_df %>%
+    group_by(across(all_of(grouping_vars))) %>%
+    summarise(cell_count = n(), .groups = "drop")
+  
+  # Define grouping variables for the denominator (subject plus any additional variables)
+  grouping_vars_total <- c(subject_col, vars_to_keep)
+  
+  # Calculate total cells per subject (and additional variables) for the denominator.
+  # If denominator_clusters is specified, only include those clusters in the total.
+  if (!is.null(denominator_clusters)) {
+    total_cells <- sc_df %>%
+      filter(.data[[cluster_col]] %in% denominator_clusters) %>%
+      group_by(across(all_of(grouping_vars_total))) %>%
+      summarise(total_cells = n(), .groups = "drop")
+  } else {
+    total_cells <- sc_df %>%
+      group_by(across(all_of(grouping_vars_total))) %>%
+      summarise(total_cells = n(), .groups = "drop")
+  }
+  
+  # Merge the cell counts with the total cell counts based on subject and additional variables
+  result <- cell_counts %>%
+    left_join(total_cells, by = grouping_vars_total) %>%
+    mutate(frequency = cell_count / total_cells)
+  
+  # Apply the show_clusters filter to display only the desired clusters in the final result
+  if (!is.null(show_clusters)) {
+    result <- result %>%
+      filter(.data[[cluster_col]] %in% show_clusters)
+  }
+  
+  # Rename the column specified by cluster_col to 'cluster'
+  result <- result %>% dplyr::rename(cluster = !!rlang::sym(cluster_col))
+  
+  return(result)
+}
+```
+
+## Pseudobulk analysis
+
+### DGE with DESeq2
+
+```{r}
+pseudobulk_DE <- function(seurat_object,
+                          replicate,
+                          cell_clusters,
+                          compare_var,
+                          reference_level,
+                          covariate = NULL,
+                          params = list()) {
+  
+  ## Check that the required columns exist in the metadata
+  required_cols <- c(replicate, cell_clusters, compare_var)
+  if (!is.null(covariate)) {
+    required_cols <- c(required_cols, covariate)
+  }
+  missing_cols <- setdiff(required_cols, colnames(seurat_object@meta.data))
+  if(length(missing_cols) > 0) {
+    stop("The following required columns are missing from seurat_object@meta.data: ", 
+         paste(missing_cols, collapse = ", "))
+  }
+  
+  ## Rename metadata columns to standard names used throughout the function
+  seurat_object@meta.data$replicate <- as.character(seurat_object@meta.data[[replicate]])
+  seurat_object@meta.data$cell_type <- as.character(seurat_object@meta.data[[cell_clusters]])
+  seurat_object@meta.data$label     <- as.factor(seurat_object@meta.data[[compare_var]])
+  
+  ## If a covariate is provided, add it to the metadata
+  if(!is.null(covariate)) {
+    seurat_object@meta.data$covariate <- seurat_object@meta.data[[covariate]]
+  }
+  
+  ## Relevel the comparison variable factor using the provided reference level
+  seurat_object@meta.data$label <- relevel(seurat_object@meta.data$label, ref = reference_level)
+  
+  ## Save metadata for later use
+  meta <- seurat_object@meta.data
+  
+  ## Check that a replicate column now exists
+  if (!"replicate" %in% colnames(meta))
+    stop("metadata does not contain replicate information")
+  
+  ## Keep only cell types with enough cells (at least 3 cells per label per cell type)
+  keep <- meta %>%
+    dplyr::count(cell_type, label) %>%
+    dplyr::group_by(cell_type) %>%
+    dplyr::filter(all(n >= 3)) %>%
+    dplyr::pull(cell_type) %>%
+    unique()
+  
+  ## Process data into gene x replicate matrices for each cell type
+  Idents(seurat_object) <- seurat_object$cell_type
+  pseudobulks <- purrr::map(keep, function(ct) {
+    message("Processing cell type: ", ct)
+    so_sub <- subset(seurat_object, idents = ct)
+    
+    ## Create a local copy of metadata for this cell type
+    meta_sub <- so_sub@meta.data %>%
+      dplyr::mutate(label = as.character(label),
+                    replicate = as.character(replicate))
+    
+    ## Check for at least two groups (e.g. at least two levels in 'label')
+    if (n_distinct(meta_sub$label) < 2)
+      return(NA)
+    
+    ## Optionally allow per-cell pseudo-bulking if params$replicate == 'cells'
+    if (!is.null(params$replicate)) {
+      if (params$replicate == 'cells') {
+        meta_sub$replicate <- colnames(so_sub)
+        ## Remove any ":" characters which may cause issues downstream
+        if (any(grepl("\\:", meta_sub$replicate))) {
+          meta_sub$replicate <- gsub(".*\\:", "", meta_sub$replicate)
+        }
+      }
+    } else {
+      replicate_counts <- dplyr::distinct(meta_sub, label, replicate) %>%
+        dplyr::group_by(label) %>%
+        dplyr::summarise(replicates = n_distinct(replicate)) %>%
+        dplyr::pull(replicates)
+      if (any(replicate_counts < 2))
+        return(NA)
+    }
+    
+    ## Create a design matrix to aggregate counts per replicate per group.
+    ## This uses the combined replicate and label information.
+    mm <- model.matrix(~ 0 + replicate:label, data = meta_sub)
+    mat_mm <- GetAssayData(so_sub, slot = 'counts') %*% mm
+    keep_genes <- rowSums(mat_mm > 0) > 0
+    mat_mm <- mat_mm[keep_genes, , drop = FALSE] %>% as.data.frame()
+    
+    ## Reset column names.
+    ## The column names will be in the form "subjectID:group".
+    colnames(mat_mm) <- gsub("replicate|label", "", colnames(mat_mm))
+    
+    ## Drop any empty columns
+    keep_samples <- colSums(mat_mm) > 0
+    mat_mm <- mat_mm[, keep_samples, drop = FALSE]
+    return(mat_mm)
+  }) %>% setNames(keep)
+  
+  ## Remove cell types that did not yield any pseudo-bulk matrix
+  pseudobulks <- pseudobulks[!purrr::map_lgl(pseudobulks, is.null)]
+  pseudobulks <- pseudobulks[!is.na(pseudobulks)]
+  
+  ## Remove cell types with too few genes
+  min_dim <- purrr::map_dbl(pseudobulks, ~ nrow(as.data.frame(.)))
+  pseudobulks <- pseudobulks[min_dim > 1]
+  
+  ## Also filter out cell types without replicates
+  min_repl <- purrr::map_int(pseudobulks, function(x) {
+    tmp <- as.data.frame(x)
+    targets <- data.frame(group_sample = colnames(tmp)) %>%
+      dplyr::mutate(group = gsub(".*\\:", "", group_sample))
+    if (n_distinct(targets$group) == 1)
+      return(0L)
+    min(table(targets$group))
+  })
+  pseudobulks <- pseudobulks[min_repl >= 2]
+  
+  ## List to store DESeq2 objects
+  DESeq2_objs <- list()
+  
+  ## Load the DESeq2 library
+  library(DESeq2)
+  
+  ## Run DESeq2 for each cell type
+  DE <- purrr::map2(pseudobulks, names(pseudobulks), function(x, cell_type) {
+    tryCatch({
+      ## Create a targets data.frame from the pseudo-bulk column names.
+      ## We extract both the group and replicate information.
+      targets <- data.frame(group_sample = colnames(x)) %>%
+        dplyr::mutate(group = gsub(".*\\:", "", group_sample),
+                      replicate = gsub("\\:.*", "", group_sample))
+      
+      ## If a covariate is provided, retrieve its value for each replicate.
+      if (!is.null(covariate)) {
+        ## Subset the original object to the current cell type.
+        so_sub <- subset(seurat_object, idents = cell_type)
+        covariate_df <- so_sub@meta.data %>%
+          dplyr::select(replicate, covariate) %>%
+          dplyr::distinct()
+        targets <- targets %>% dplyr::left_join(covariate_df, by = "replicate")
+      }
+      
+      ## If the original metadata label was a factor, preserve its levels here.
+      if (is.factor(meta$label)) {
+        targets$group <- factor(targets$group, levels = levels(meta$label))
+      }
+      
+      ## Build the design formula.
+      ## If a covariate is provided, include it in the design.
+      if (!is.null(covariate)) {
+        design_formula <- as.formula("~ covariate + group")
+      } else {
+        design_formula <- as.formula("~ group")
+      }
+      
+      ## Build the DESeq2 dataset
+      dds <- DESeqDataSetFromMatrix(countData = x,
+                                    colData = targets,
+                                    design = design_formula)
+      
+      ## Set default parameters if not provided
+      if (!'test' %in% names(params))
+        params$test <- 'LRT'
+      if (!'fitType' %in% names(params))
+        params$fitType <- 'parametric'
+      if (!'sfType' %in% names(params))
+        params$sfType <- 'poscounts'
+      if (!'independentFiltering' %in% names(params))
+        params$independentFiltering <- FALSE
+      if (!'betaPrior' %in% names(params))
+        params$betaPrior <- FALSE
+      
+      ## Run DESeq2 with either the Wald or LRT test
+      if (params$test == 'Wald') {
+        dds <- try(DESeq(dds,
+                         test = params$test,
+                         fitType = params$fitType,
+                         sfType = params$sfType,
+                         betaPrior = params$betaPrior))
+      } else {
+        dds <- try(DESeq(dds,
+                         test = params$test,
+                         reduced = ~ 1,
+                         fitType = params$fitType,
+                         sfType = params$sfType,
+                         betaPrior = params$betaPrior))
+      }
+      
+      res <- results(dds, independentFiltering = params$independentFiltering)
+      result <- as.data.frame(res) %>%
+        tibble::rownames_to_column('gene') %>%
+        dplyr::mutate(test = 'pseudobulk_DESeq2')
+      
+      ## Save the DESeq2 object for later inspection if desired
+      DESeq2_objs[[cell_type]] <<- dds
+      
+      return(result)
+    }, error = function(e) {
+      message("Error in cell type ", cell_type, ": ", e)
+      return(data.frame())
+    })
+  })
+  
+  ## Standardize the column names to match Seurat output conventions using conditional renaming
+  DE <- purrr::map(DE, function(df) {
+    rename_map <- c('p.value' = 'p_val',
+                    'padj' = 'p_val_adj',
+                    'log2FoldChange' = 'avg_logFC')
+    for (old_name in names(rename_map)) {
+      if (old_name %in% colnames(df)) {
+        colnames(df)[colnames(df) == old_name] <- rename_map[old_name]
+      }
+    }
+    return(df)
+  })
+  
+  return(list(DE = DE, pseudobulks = pseudobulks, DESeq2_objs = DESeq2_objs))
+}
+```
+
+### Customize pathway labels
+
+```{r}
+customize_pathway_labels <- function(GSEAres, replace_underscores = FALSE) {
+  # Ensure the Description column is a character vector
+  GSEAres@result$Description <- as.character(GSEAres@result$Description)
+  
+  # Remove the "REACTOME_" prefix from the pathway IDs
+  GSEAres@result$Description <- gsub("^REACTOME_", "", GSEAres@result$Description)
+  
+  # Convert the pathway descriptions to lowercase
+  GSEAres@result$Description <- tolower(GSEAres@result$Description)
+  
+  # Function to replace terms based on a provided replacements list
+  replace_terms <- function(text, replacements) {
+    for (term in names(replacements)) {
+      text <- gsub(term, replacements[term], text)
+    }
+    return(text)
+  }
+  
+  # set labels
+  labels <- c("fcgamma_receptor" = "", "fcgr" = "FCGR", "gm_csf" = "GM-CSF", "tcr" = "TCR", 
+                      "ddx58" = "RIG-I", "ifih1" = "MDA-5", "alpha_beta" = "alpha/beta",
+                      "interleukin_1" = "IL-1", "interleukin_3" = "IL-3", "interleukin_4" = "IL-4", 
+                      "interleukin_5" = "IL-5", "interleukin_13" = "IL-13",
+                      "mhc" = "MHC", "class_ii" = "class_II", "class_i_MHC" = "MHC_class_I", 
+                      "jak_stat" = "JAK-STAT", "pd_1" = "PD-1", "tnf" = "TNF", 
+                      "tgf" = "TGF", "TGF_beta" = "TGFb", "bcr" = "BCR", "cd28" = "CD28", "hiv" = "HIV", "b_cell" = "B_cell",
+                      "sars_cov" = "SARS-CoV", "SARS-CoV_1" = "SARS-CoV-1", "SARS-CoV_2" = "SARS-CoV-2",
+                      "hcmv" = "hCMV")
+  
+  # Apply the replacement function using the provided 'labels' vector
+  GSEAres@result$Description <- replace_terms(GSEAres@result$Description, labels)
+  
+  # After applying replacements, optionally remove underscores by replacing them with spaces
+  if (replace_underscores) {
+    GSEAres@result$Description <- gsub("_", " ", GSEAres@result$Description)
+  }
+  
+  # Capitalize the first letter of each pathway description
+  GSEAres@result$Description <- paste(
+    toupper(substring(GSEAres@result$Description, 1, 1)),
+    substring(GSEAres@result$Description, 2),
+    sep = ""
+  )
+  
+  return(GSEAres)
+}
+```
+
+### GSEA
+
+```{r}
+run_GSEA_analysis <- function(DEG_df,
+                              collapse_pathways = FALSE,
+                              pvalueCutoff    = 0.05,
+                              gmt_path,
+                              subset_pathways = NULL,
+                              scoreType_GSEA = "std") {
+  
+  library(clusterProfiler)
+  library(fgsea)
+  library(dplyr)
+
+  # 1) Read the GMT and subset to genes in your data
+  pwl2 <- read.gmt(gmt_path)  
+  bg_genes_REACTOME <- pwl2 %>% dplyr::filter(gene %in% DEG_df$gene)
+  
+  # 2) If subset_pathways is provided, filter to just those terms
+  if (!is.null(subset_pathways)) {
+    bg_genes_REACTOME <- bg_genes_REACTOME %>% dplyr::filter(term %in% subset_pathways)
+  }
+  
+  # 3) Create a named, ranked vector of statistics
+  gene_rankings_REACTOME <- DEG_df$stat
+  names(gene_rankings_REACTOME) <- DEG_df$gene
+  gene_rankings_REACTOME <- sort(na.omit(gene_rankings_REACTOME), decreasing = TRUE)
+
+  if (!collapse_pathways) {
+    # — Non-collapsed GSEA —
+    GSEAres <- GSEA(gene_rankings_REACTOME,
+                    TERM2GENE    = bg_genes_REACTOME,
+                    minGSSize    = 10,
+                    maxGSSize    = length(gene_rankings_REACTOME) - 1,
+                    pvalueCutoff = pvalueCutoff,
+                    pAdjustMethod= "BH",
+                    by           = "fgsea",
+                    scoreType    = scoreType_GSEA,
+                    verbose      = FALSE,
+                    eps          = 0)
+    
+  } else {
+    # — Collapsed-pathway GSEA —
+    
+    # a) Load all pathways as a list
+    gene_sets <- GSEABase::getGmt(gmt_path)
+    # b) If subsetting, drop any you don’t want
+    if (!is.null(subset_pathways)) {
+      gene_sets <- gene_sets[ names(gene_sets) %in% subset_pathways ]
+    }
+    # c) Convert to a simple list of character vectors
+    bg_genes_REACTOME_list <- lapply(gene_sets, GSEABase::geneIds)
+    names(bg_genes_REACTOME_list) <- names(gene_sets)
+    
+    # d) Run fgsea (gives you the stats table)
+    GSEAres <- fgsea(pathways   = bg_genes_REACTOME_list,
+                     stats      = gene_rankings_REACTOME,
+                     scoreType  = scoreType_GSEA,
+                     minSize    = 10,
+                     maxSize    = length(gene_rankings_REACTOME) - 1) %>%
+      dplyr::filter(padj < pvalueCutoff)
+    
+    # e) Collapse redundant pathways
+    cp <- collapsePathways(GSEAres, bg_genes_REACTOME_list, gene_rankings_REACTOME)
+    
+    # f) Keep only the “main” pathways
+    GSEAres <- GSEAres %>% dplyr::filter(pathway %in% cp$mainPathways)
+  }
+  
+  return(GSEAres)
+}
+```
+
+### GSEA heatmap
+
+```{r}
+gsea_heatmap <- function(
+  gsea_list,
+  pval_cutoff = 0.05,
+  collapsed_pathways = FALSE,
+  pathways_show = NULL,
+  title = "Pseudobulk GSEA Analysis",
+  show_rownames = TRUE,
+  rows_annotations = NULL,
+  col_annotation_rows = NULL,
+  col_annotation_cols = NULL,
+  title_annotation_rows = NULL,
+  title_annotation_cols = NULL,
+  gap_by_row = FALSE,
+  gap_by_col = FALSE
+) {
+
+  # Helper to extract & rename NES and padj/qvalue
+  extract_gsea_data <- function(gsea_obj, group_name, collapsed_pathways) {
+    id_col   <- ifelse(collapsed_pathways, "pathway", "ID")
+    padj_col <- ifelse(collapsed_pathways, "padj",    "qvalue")
+
+    gsea_obj %>%
+      as.data.frame() %>%
+      dplyr::select(all_of(id_col), NES, all_of(padj_col)) %>%
+      dplyr::rename(
+        !!paste0("NES_",   group_name) := NES,
+        !!paste0("padj_", group_name) := .data[[padj_col]]
+      )
+  }
+
+  # 1) build a merged data.frame of NES + padj
+  gsea_data_list <- lapply(names(gsea_list), function(name) {
+    extract_gsea_data(gsea_list[[name]], name, collapsed_pathways)
+  })
+  identifier <- if (collapsed_pathways) "pathway" else "ID"
+  df <- Reduce(function(x, y) full_join(x, y, by = identifier), gsea_data_list)
+
+  # 2) fill NAs in NES → 0
+  nes_cols <- grep("^NES_", colnames(df), value = TRUE)
+  df <- df %>% dplyr::mutate(across(all_of(nes_cols), ~ ifelse(is.na(.), 0, .)))
+
+  # 3) fill NAs in padj → 1 & filter rows with any padj < cutoff
+  padj_cols <- grep("^padj_", colnames(df), value = TRUE)
+  df <- df %>%
+    dplyr::mutate(across(all_of(padj_cols), ~ ifelse(is.na(.), 1, .))) %>%
+    dplyr::filter(rowSums(dplyr::across(all_of(padj_cols), ~ . < pval_cutoff)) > 0)
+
+  # 3b) subset to only the user-requested pathways (if any)
+  if (!is.null(pathways_show)) {
+    keep <- pathways_show
+    matched <- df[[identifier]] %in% keep
+    if (!any(matched)) {
+      warning("No pathways in 'pathways_show' matched your data; plotting all filtered pathways instead.")
+    } else {
+      df <- df[matched, , drop = FALSE]
+    }
+  }
+  
+  # 4) pretty-print the pathway labels
+  customize_labels <- function(labels) {
+    labels <- as.character(labels)
+    labels <- gsub("^REACTOME_", "", labels)
+    labels <- tolower(labels)
+    replacements <- c(
+      "fcgamma_receptor" = "", "fcgr" = "FCGR", "gm_csf" = "GM-CSF", "tcr" = "TCR",
+      "ddx58" = "RIG-I", "ifih1" = "MDA-5", "alpha_beta" = "alpha/beta",
+      "interleukin_1" = "IL-1", "interleukin_3" = "IL-3", "interleukin_4" = "IL-4",
+      "interleukin_5" = "IL-5", "interleukin_13" = "IL-13",
+      "mhc" = "MHC", "class_ii" = "class_II", "class_i_MHC" = "MHC_class_I",
+      "jak_stat" = "JAK-STAT", "pd_1" = "PD-1", "tnf" = "TNF",
+      "tgf" = "TGF", "TGF_beta" = "TGFb", "bcr" = "BCR", "cd28" = "CD28",
+      "hiv" = "HIV", "b_cell" = "B_cell",
+      "sars_cov" = "SARS-CoV", "SARS-CoV_1" = "SARS-CoV-1", "SARS-CoV_2" = "SARS-CoV-2",
+      "hcmv" = "hCMV", "csf" = "CSF"
+    )
+    for (term in names(replacements)) {
+      labels <- gsub(term, replacements[term], labels)
+    }
+    labels <- gsub("_", " ", labels)
+    labels <- paste0(toupper(substring(labels, 1, 1)), substring(labels, 2))
+    labels
+  }
+  df[[identifier]] <- customize_labels(df[[identifier]])
+
+  # 5) build NES-only matrix for heatmap
+  df_NES <- df %>% dplyr::select(-all_of(padj_cols))
+  rownames(df_NES) <- df_NES[[identifier]]
+  df_NES[[identifier]] <- NULL
+  df_NES <- as.matrix(df_NES)
+
+  # 6) prep & reorder row-annotations if provided
+  if (!is.null(rows_annotations)) {
+    rownames(rows_annotations) <- customize_labels(rownames(rows_annotations))
+    common_pathways <- intersect(rownames(df_NES), rownames(rows_annotations))
+    if (length(common_pathways) == 0) {
+      warning("No matching pathways found between heatmap data and rows_annotations.")
+      rows_annotations <- NULL
+    } else {
+      rows_annotations <- rows_annotations[common_pathways, , drop = FALSE]
+      group_var <- if ("Group" %in% colnames(rows_annotations)) rows_annotations$Group else rows_annotations[[1]]
+      ord <- order(as.factor(group_var))
+      df_NES <- df_NES[common_pathways[ord], , drop = FALSE]
+      rows_annotations <- rows_annotations[common_pathways[ord], , drop = FALSE]
+    }
+  }
+
+  # 7) format p-values for display
+  p_values <- df %>% dplyr::select(all_of(padj_cols))
+  rownames(p_values) <- df[[identifier]]
+  formatted_p_values <- p_values %>%
+    dplyr::mutate(across(everything(), ~ dplyr::case_when(
+      . < 1e-4 ~ "****",
+      . < 1e-3 ~ "***",
+      . < 1e-2 ~ "**",
+      . < 0.05 ~ "*",
+      . < 0.1  ~ "(*)",
+      TRUE     ~ ""
+    )))
+  formatted_p_values <- formatted_p_values[rownames(df_NES), , drop = FALSE]
+
+  # 8) column-metadata & titles
+  meta.heatmap <- data.frame(Meta1 = names(gsea_list), row.names = colnames(df_NES))
+  if (!is.null(rows_annotations) && !is.null(title_annotation_rows)) {
+    colnames(rows_annotations) <- title_annotation_rows
+  }
+  if (!is.null(title_annotation_cols)) {
+    colnames(meta.heatmap) <- title_annotation_cols
+  }
+
+  # 9) build annotation_colors
+  annotation_colors <- list()
+  if (!is.null(rows_annotations) && !is.null(col_annotation_rows)) {
+    if (is.list(col_annotation_rows)) {
+      for (cn in colnames(rows_annotations)) {
+        if (cn %in% names(col_annotation_rows)) annotation_colors[[cn]] <- col_annotation_rows[[cn]]
+      }
+    } else {
+      annotation_colors[[colnames(rows_annotations)[1]]] <- col_annotation_rows
+    }
+  }
+  if (!is.null(col_annotation_cols)) {
+    if (is.list(col_annotation_cols)) {
+      for (cn in colnames(meta.heatmap)) {
+        if (cn %in% names(col_annotation_cols)) annotation_colors[[cn]] <- col_annotation_cols[[cn]]
+      }
+    } else {
+      annotation_colors[[colnames(meta.heatmap)[1]]] <- col_annotation_cols
+    }
+  }
+
+  # 10) compute gaps based on flags
+  if (gap_by_row && !is.null(rows_annotations)) {
+    grp_row <- if ("Group" %in% colnames(rows_annotations)) "Group" else colnames(rows_annotations)[1]
+    f_row    <- factor(rows_annotations[[grp_row]], levels = unique(rows_annotations[[grp_row]]))
+    gaps_row <- which(diff(as.numeric(f_row)) != 0)
+  } else {
+    gaps_row <- NULL
+  }
+  if (gap_by_col) {
+    grp_col  <- colnames(meta.heatmap)[1]
+    f_col    <- factor(meta.heatmap[[grp_col]], levels = unique(meta.heatmap[[grp_col]]))
+    gaps_col <- which(diff(as.numeric(f_col)) != 0)
+  } else {
+    gaps_col <- NULL
+  }
+
+  # 11) draw the heatmap
+  pheatmap::pheatmap(
+    df_NES,
+    clustering_method    = "complete",
+    annotation_col       = meta.heatmap,
+    annotation_row       = rows_annotations,
+    annotation_colors    = if (length(annotation_colors) > 0) annotation_colors else NULL,
+    annotation_names_col = FALSE,
+    annotation_names_row = FALSE,
+    show_rownames        = show_rownames,
+    show_colnames        = FALSE,
+    cluster_rows         = ifelse(is.null(rows_annotations), TRUE, FALSE),
+    cluster_cols         = FALSE,
+    display_numbers      = formatted_p_values,
+    fontsize_number      = 10,
+    fontsize_row         = 10,
+    fontsize_col         = 10,
+    angle_col            = "315",
+    border_color         = NA,
+    color                = colorRampPalette(c("#2171b5", "white", "#ef3b2c"))(100),
+    breaks               = seq(-max(abs(df_NES)), max(abs(df_NES)), length.out = 101),
+    gaps_row             = gaps_row,
+    gaps_col             = gaps_col,
+    heatmap_legend_param = list(title = "NES", title_position = "topcenter", legend_direction = "vertical"),
+    main                 = title
+  )
+}
+```
+
+## Gene scores
+
+```{r}
+plot_gene_set_scores <- function(seurat_obj, cell_subset, annotation_column, gene_lists_focus,
+                                 gene_lists_bg, bg_origin, pathway_titles = NULL, 
+                                 tissue = c("CSF", "PBMC"), nrow = 1, calc_signif = TRUE,
+                                 title_wrap_width = 40) {
+  # If pathway_titles is not provided, use the names from gene_lists_focus
+  if (is.null(pathway_titles)) {
+    pathway_titles <- setNames(as.list(names(gene_lists_focus)), names(gene_lists_focus))
+  }
+  
+  # Generate dynamic comparisons based on tissues provided.
+  comparisons_list <- list()
+  if (length(tissue) >= 2) {
+    for (i in 1:(length(tissue) - 1)) {
+      for (j in (i + 1):length(tissue)) {
+        comparisons_list <- c(comparisons_list, list(c(paste0("control_", tissue[i]), 
+                                                       paste0("control_", tissue[j]))))
+      }
+    }
+    for (i in 1:(length(tissue) - 1)) {
+      for (j in (i + 1):length(tissue)) {
+        comparisons_list <- c(comparisons_list, list(c(paste0("PWH_", tissue[i]), 
+                                                       paste0("PWH_", tissue[j]))))
+      }
+    }
+  }
+  for (t in tissue) {
+    comparisons_list <- c(comparisons_list, list(c(paste0("control_", t), paste0("PWH_", t))))
+  }
+  
+  # List to store plots
+  gene_set_score_plots <- list()
+  
+  for (gene_list in names(gene_lists_focus)) {
+    # Remove NA values from the current gene list
+    current_genes <- na.omit(gene_lists_focus[[gene_list]])
+    
+    # Intersect with features present in the Seurat object
+    current_genes <- intersect(current_genes, rownames(seurat_obj))
+    
+    # Check if there are enough valid genes to calculate a module score;
+    # silently skip if not.
+    if (length(current_genes) < 2) {
+      next
+    }
+    
+    # Subset by the specified cell type using the annotation_column
+    seurat_obj_score_subset <- subset(seurat_obj, subset = !!sym(annotation_column) == cell_subset)
+    
+    # Filter cells to only include the specified tissues.
+    selected_cells <- which(seurat_obj_score_subset@meta.data$tissue %in% tissue)
+    seurat_obj_score_subset <- subset(seurat_obj_score_subset, cells = selected_cells)
+    
+    # Calculate module score using the filtered gene list
+    seurat_obj_score_subset <- AddModuleScore(seurat_obj_score_subset, 
+                                              features = list(current_genes), 
+                                              name = "pathway_score")
+    
+    # Summarize the module score by grouping over tissue, HIV_status, and subject_id
+    df <- seurat_obj_score_subset@meta.data %>% 
+      group_by(tissue, HIV_status, subject_id) %>% 
+      summarize(mean = mean(pathway_score1), .groups = 'drop')
+    df$group <- paste0(df$HIV_status, "_", df$tissue)
+    
+    # Reorder the group factor to the desired order dynamically.
+    # For each tissue provided, the order is "control_<tissue>", then "PWH_<tissue>"
+    desired_levels <- unlist(lapply(tissue, function(x) c(paste0("control_", x), paste0("PWH_", x))))
+    df$group <- factor(df$group, levels = desired_levels)
+    
+    # --- Title Processing ---
+    title_text <- pathway_titles[[gene_list]]
+    title_text <- gsub("^REACTOME_", "", title_text)
+    title_text <- gsub("_", " ", title_text)
+    
+    # Convert to lower case then to Title Case (first letter of each word capitalized)
+    title_text <- stringr::str_to_title(tolower(title_text))
+    
+    # Define custom replacements (keys are in lower case with spaces)
+    replacements <- c("fcgamma_receptor" = "", "fcgr" = "FCGR", "gm_csf" = "GM-CSF", "tcr" = "TCR", 
+                      "ddx58" = "RIG-I", "ifih1" = "MDA-5", "alpha_beta" = "alpha/beta",
+                      "interleukin_1" = "IL-1", "interleukin_3" = "IL-3", "interleukin_4" = "IL-4", 
+                      "interleukin_5" = "IL-5", "interleukin_13" = "IL-13",
+                      "mhc" = "MHC", "class_ii" = "class_II", "class_i_MHC" = "MHC_class_I", 
+                      "jak_stat" = "JAK-STAT", "pd_1" = "PD-1", "tnf" = "TNF", 
+                      "tgf" = "TGF", "TGF_beta" = "TGFb", "bcr" = "BCR", "cd28" = "CD28", "hiv" = "HIV", "b_cell" = "B_cell",
+                      "sars_cov" = "SARS-CoV", "SARS-CoV_1" = "SARS-CoV-1", "SARS-CoV_2" = "SARS-CoV-2",
+                      "hcmv" = "hCMV")
+    
+    for (k in names(replacements)) {
+      key_title <- stringr::str_to_title(k)
+      pattern <- paste0("\\b", key_title, "\\b")
+      title_text <- gsub(pattern, replacements[k], title_text)
+      title_text <- gsub("\\bIi\\b", "II", title_text)
+    }
+    
+    # Wrap the title using the custom width
+    title_text <- stringr::str_wrap(title_text, width = title_wrap_width)
+    # --- End Title Processing ---
+    
+    # Create plot for the current gene list
+    p <- ggplot(df, aes(y = mean, x = group, fill = group)) +
+      geom_boxplot(position = position_dodge(width = 1)) +
+      geom_jitter(position = position_dodge(width = 1), alpha = 0.3)
+    
+    if (calc_signif) {
+      p <- p + geom_signif(comparisons = comparisons_list, 
+                           step_increase = 0.12, tip_length = 0, test = "wilcox.test", map_signif_level = TRUE)
+    }
+    
+    p <- p + labs(x = "", y = "Gene Module Score", 
+                  title = title_text, 
+                  subtitle = paste0("Set of ", length(current_genes), "/", length(gene_lists_bg[[gene_list]]), " genes")) +
+      theme_bw() +
+      theme(plot.title = element_text(size = 12, hjust = 0.5, face = "bold"),
+            plot.subtitle = element_text(size = 11, hjust = 0.5), 
+            axis.text.x = element_blank(),
+            axis.ticks.x = element_blank())
+    
+    gene_set_score_plots[[gene_list]] <- p
+  }
+  
+  # Final plot annotation now only includes the cell subset information.
+  final_plot <- wrap_plots(gene_set_score_plots, nrow = nrow, guides = "collect", axis_titles = "collect") +
+    plot_annotation(paste0("Gene Scores in ", cell_subset))
+  
+  return(final_plot)
+}
+```
