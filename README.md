@@ -23,7 +23,8 @@ See the manuscript's Methods for full experimental and computational details.
 
 Data are available in public repositories:
 
-- **CSF Group 1 (part of BCR-seq data), CSF Group 2 & Choroid Plexus:** SRA Accession: PRJNA1289878
+- **CSF Group 1 (part of BCR-seq data), CSF Group 2 & Choroid Plexus:**
+  - SRA Accession: PRJNA1289878
 - **CSF Group 1 (Previously Published):**
   - RNA-seq: SRA PRJNA717310 (study PRJNA717310), GEO GSE243905
     - C1_BLD_RNA: SRR14076861
