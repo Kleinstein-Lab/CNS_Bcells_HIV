@@ -1273,6 +1273,7 @@ gsea_heatmap <- function(
     show_colnames        = FALSE,
     cluster_rows         = ifelse(is.null(rows_annotations), TRUE, FALSE),
     cluster_cols         = FALSE,
+    scale                = "none",
     display_numbers      = formatted_p_values,
     fontsize_number      = 10,
     fontsize_row         = 10,
