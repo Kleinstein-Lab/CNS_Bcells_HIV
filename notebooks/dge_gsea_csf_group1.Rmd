@@ -100,7 +100,7 @@ GSEAres_blood_discov <- run_GSEA_analysis(deseq2_PBMC_B_gex$DE$`Resting Memory`,
                              gmt_path = path_ref_genes_reactome)
 
 # show results
-GSEAres_blood@result %>% dplyr::filter(p.adjust < 0.05)
+GSEAres_blood_discov@result %>% dplyr::filter(p.adjust < 0.05)
 
 # remove objects
 rm(path_ref_genes_reactome, replacements)
