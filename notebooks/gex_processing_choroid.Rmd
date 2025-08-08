@@ -197,7 +197,26 @@ DimPlot(gex_choroid, reduction = "umap.harmony", group.by = "seurat_clusters", r
 markers_all <- read.csv(header = TRUE, file = "markers.csv")
 ```
 
-#### Plot B cell markers
+#### Plot cell markers
+
+```{r}
+p <- DotPlot(gex_choroid, cluster.idents = TRUE, group.by = "seurat_clusters",
+        features = unique(markers_all$Marker)) %>%
+  add_info_bar(method = "join", 
+               info_type = "Cell_Type",
+               info = markers_all %>%
+                 dplyr::select(Cell_Type, Marker) %>%
+                 dplyr::rename(features.plot = Marker),
+               text_size = 6, label = FALSE) + RotatedAxis() +
+  theme(strip.text.x = element_text(size = 12)) +
+  ggtitle("All B cell markers")
+
+# plot side metrics
+plot_dot_side(p, gex_choroid, row_identity = "seurat_clusters",
+              facet_col = "Cell_Type", info_to_add = c("cluster_size"))
+```
+
+#### Assign cluster annotations
 
 ```{r}
 # annotations - resol 0.3
