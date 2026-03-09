@@ -1,0 +1,308 @@
+---
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+# CSF proteomics
+
+## Load and prepare data
+
+```{r}
+# load table
+eve_prot <- read.csv("~/Documents/Projects/CSF_proteomics/Eve_2026/Eve_Analyte_ObsConc_Samples.csv", check.names = FALSE)
+
+# reshape dataframe
+df_csf_meta <- eve_prot %>%
+  pivot_longer(cols = -Analyte, names_to = "subject_id", values_to = "protein_level") %>%
+  left_join(meta_df, by = "subject_id")
+
+# filter proteins with missing values in >= 5 individuals in both groups
+proteins_to_exclude <- df_csf_meta %>%
+  group_by(Analyte, HIV_status) %>%
+  summarise(num_subjects_zero = n_distinct(subject_id[protein_level == 0]), .groups = "drop") %>%
+  dplyr::filter(num_subjects_zero >= 5) %>%
+  dplyr::count(Analyte) %>%
+  dplyr::filter(n == 2) %>%
+  pull(Analyte)
+
+df_csf_meta <- df_csf_meta %>%
+  dplyr::filter(!Analyte %in% proteins_to_exclude)
+
+# clean up
+rm(hiv_metadata, meta_df, proteins_to_exclude)
+```
+
+## Global comparison PWH vs. PWoH
+
+```{r}
+comparison_results <- df_csf_meta %>%
+  group_by(Analyte) %>%
+  # Run Shapiro test pour test for normality
+  summarise(
+    shapiro_p = if(n_distinct(protein_level) > 1 & n() >= 3) {
+                  shapiro.test(protein_level)$p.value 
+                } else { 
+                  NA_real_ 
+                },
+  # Many proteins do not have a normal distribution. Therfore, a non-parametric test is more appropriate
+  # Run Wilcoxon Test
+  p_val = wilcox.test(protein_level ~ HIV_status)$p.value) %>%
+  # Correct for Multiple Comparisons (BH / FDR)
+  mutate(p_adj = p.adjust(p_val, method = "BH"))
+
+# show significant results
+prot_signif <- comparison_results %>% dplyr::filter(p_val < 0.05) %>% pull(Analyte)
+```
+
+## Calculate protein-protein correlations
+
+```{r}
+# Prepare Wide Matrix (SampleID vs Proteins)
+df_wide <- df_csf_meta %>% pivot_wider(names_from = Analyte, values_from = protein_level)
+metadata_lookup <- df_csf_meta %>% dplyr::select(subject_id, HIV_status) %>% distinct()
+df_wide <- df_wide %>% left_join(metadata_lookup, by = "subject_id")
+df_wide$subject_id <- as.character(df_wide$subject_id)
+
+# clean up
+rm(metadata_lookup)
+```
+
+```{r}
+# Calculate protein correlations
+cor_data <- df_wide %>% dplyr::select(all_of(prot_signif))
+
+# Calculate the correlation matrix
+corr_matrix <- cor(cor_data, method = "spearman") 
+
+# Visualize the matrix
+ggcorrplot::ggcorrplot(corr_matrix, 
+           method = "square", type = "lower", lab = TRUE,
+           lab_size = 3, colors = c("blue", "white", "red"), # Blue=neg, Red=pos
+           title = "Correlation of CSF Inflammatory Markers",
+           legend.title = "Corr") +
+     theme_minimal() +
+     theme(plot.title = element_text(size = 15, hjust = 0.5, face = "bold"),
+           axis.title.x = element_blank(),
+           axis.title.y = element_blank(),
+           axis.text.x = element_text(size = 14, hjust = 1, vjust = 0.5, angle = 90),
+           axis.text.y = element_text(size = 14),
+           axis.ticks.y  = element_line(color = "black"),
+           strip.text = element_text(size = 12, face = "bold"),
+           panel.grid = element_blank(),
+           axis.line = element_line(color = "black"),
+           legend.title = element_text(size = 14),
+           legend.text = element_text(size = 10))
+
+# clean up
+rm(cor_data, corr_matrix)
+```
+
+## Extract gene scores from single cell RNA-seq data
+
+```{r}
+b_cell_activation_genes <- c("CD69", "CD80", "CD86", "CD83", "CD40", "AICDA", "IRF4", "ICOSLG", "MYC", "TFRC") 
+migration_genes <- c("S1PR1", "PLCG2", "DOCK2", "RAC2", "CD44", "BSG", "S1PR2", "MMP9", "ITGA4", "ITGB1", 
+                     "ITGB2", "ITGB7", "ITGAM","ITGAX", "SELL", "ICAM3", "ICAM2", "ICAM1", "VCAM1", "SELPLG")
+chemokine_genes <- c("CXCR4", "CXCR5", "CXCR3", "CCR7",  "CCR6", "CXCL13", "CCL19", "CCL21", "CXCL12",  "ACKR3", "CCL5", "CXCL16")
+
+# Combine your gene vectors into a single list
+gene_signatures <- list(
+  b_cell_activation_genes, 
+  migration_genes, 
+  chemokine_genes
+)
+```
+
+```{r}
+# CSF group 1
+key_data <- read.csv("./CSF_gr1_HARC_ID_key.csv")
+gex_csf1 <- gex_B_ART
+
+# Match the rows based on the common 'subject_id' column
+match_indices <- match(gex_csf1$subject_id, key_data$subject_id)
+
+# Add the new metadata columns to the Seurat object
+gex_csf1$HARC_ID <- key_data$HARC_ID[match_indices]
+gex_csf1$visit <- key_data$visit[match_indices]
+
+# Remove the old 'subject_id' column
+gex_csf1$subject_id <- NULL
+
+# Rename 'HARC_ID' to 'subject_id'
+names(gex_csf1@meta.data)[names(gex_csf1@meta.data) == "HARC_ID"] <- "subject_id"
+gex_csf1$subject_id <- as.character(gex_csf1$subject_id)
+
+# Verify the changes
+head(gex_csf1@meta.data[c("subject_id", "visit")])
+
+### CSF group 2
+# Assign the new 'visit' column by matching subject_id to the mapping
+gex_multi_Bcells$subject_id <- as.character(gex_multi_Bcells$subject_id)
+```
+
+```{r}
+# Create your subset object (assigning it to a variable so we can save the scores)
+csf_subset <- subset(gex_csf1, tissue == "CSF" & annotated_clusters_B == "Resting Memory")
+
+# Calculate all 3 scores in one command
+csf_subset <- AddModuleScore(
+  object = csf_subset, 
+  features = gene_signatures, 
+  name = "Module"
+)
+
+# Rename the columns to match your specific names
+names(csf_subset@meta.data)[names(csf_subset@meta.data) %in% c("Module1", "Module2", "Module3")] <- c("activation", "migration", "chemokine")
+
+# Create separate dataframe for downstream analyses
+meta_gene_scores <- csf_subset@meta.data %>% dplyr::select(subject_id, visit, HIV_status, activation, migration, chemokine)
+
+# summarize scores per subject
+df_gex_summary_5prime <- meta_gene_scores %>%
+  group_by(subject_id, HIV_status) %>%
+  summarise(
+    Mean_Activation = mean(activation, na.rm = TRUE),
+    Mean_Migration  = mean(migration, na.rm = TRUE),
+    Mean_Chemokine  = mean(chemokine, na.rm = TRUE),
+    visit = unique(visit),
+    .groups = "drop")
+```
+
+```{r}
+# Create your subset object (assigning it to a variable so we can save the scores)
+csf_subset_2 <- subset(gex_multi_Bcells, tissue == "CSF" & annotated_clusters_B == "Resting Memory")
+
+# Calculate all 3 scores in one command
+csf_subset_2 <- AddModuleScore(
+  object = csf_subset_2, 
+  features = gene_signatures, 
+  name = "Module"
+)
+
+# Rename the columns to match your specific names
+names(csf_subset_2@meta.data)[names(csf_subset_2@meta.data) %in% c("Module1", "Module2", "Module3")] <- c("activation", "migration", "chemokine")
+
+# Create separate dataframe for downstream analyses
+meta_gene_scores <- csf_subset_2@meta.data %>% dplyr::select(subject_id, visit, HIV_status, activation, migration, chemokine)
+
+# summarize scores per subject
+df_gex_summary_multi <- meta_gene_scores %>%
+  group_by(subject_id, HIV_status) %>%
+  summarise(
+    Mean_Activation = mean(activation, na.rm = TRUE),
+    Mean_Migration  = mean(migration, na.rm = TRUE),
+    Mean_Chemokine  = mean(chemokine, na.rm = TRUE),
+    visit = unique(visit),
+    .groups = "drop")
+```
+
+```{r}
+# combine 5prime and multi datasets
+df_gex_summary <- bind_rows(df_gex_summary_5prime, df_gex_summary_multi)
+```
+
+## Extract SHM difference from BCR data
+
+```{r}
+# Read key CSV file
+key_data <- read.csv("./CSF_gr1_HARC_ID_key.csv")
+
+# Match the rows based on the common 'subject_id' column
+match_indices <- match(bcr_heavy$subject_id, key_data$subject_id)
+
+# Add the new metadata columns to the Seurat object
+bcr_heavy$HARC_ID <- key_data$HARC_ID[match_indices]
+bcr_heavy$visit <- key_data$visit[match_indices]
+
+# Rename 'HARC_ID' to 'subject_id'
+bcr_heavy$subject_id <- NULL
+names(bcr_heavy)[names(bcr_heavy) == "HARC_ID"] <- "subject_id"
+bcr_heavy$subject_id <- as.character(bcr_heavy$subject_id)
+```
+
+```{r}
+# summarize mutation frequency
+data_mu_freq_clust_iso_PWH_ctrl <- bcr_heavy %>% 
+                                    dplyr::filter(gex_annotation_final %in% c("MBC class-switched") & isotype_group == "IgG") %>%
+                                    group_by(subject_id, HIV_status, tissue, gex_annotation_final, isotype_group, locus) %>%
+                                    dplyr::summarize(median_mu_freq = median(mu_freq), visit = unique(visit), .groups = "drop") %>%
+                                    group_by(isotype_group, gex_annotation_final, HIV_status, subject_id, locus) %>%
+                                    dplyr::reframe(delta_median_mu_freq = median_mu_freq[tissue == "CSF"] - median_mu_freq[tissue == "PBMC"], 
+                                                   visit = unique(visit))
+
+
+bcr_shm_diff <- data_mu_freq_clust_iso_PWH_ctrl %>%
+  dplyr::select(subject_id, HIV_status, isotype_group, gex_annotation_final, delta_median_mu_freq, visit) %>%
+  pivot_wider(
+    id_cols    = c(subject_id, HIV_status, visit),
+    names_from = c(isotype_group, gex_annotation_final),
+    values_from = delta_median_mu_freq,
+    names_glue = "IgG_MBC",
+    values_fn = mean   # handles any accidental duplicates per subject/column
+  ) %>%
+  arrange(HIV_status, subject_id)
+```
+
+## Combine protein and gene data
+
+```{r}
+# Reshape dataframe to match with cognitive data
+df_csf_meta_sep <- df_csf_meta %>%
+  separate(subject_id, into = c("subject_id", "visit"), sep = "_") %>%
+  mutate(visit = case_when(
+    visit == "v1" ~ "Baseline",     
+    TRUE ~ str_replace(visit, "v", "Visit ")
+  ))
+
+# match protein with gene scores
+protein_score <- df_csf_meta_sep
+gene_score <- df_gex_summary
+
+# match scores
+gene_protein_cor <- left_join(protein_score, gene_score, by = c("subject_id", "visit", "HIV_status"))
+gene_protein_cor <- left_join(gene_protein_cor, bcr_shm_diff, by = c("subject_id", "visit", "HIV_status"))
+```
+
+### For protein (PC) scores
+
+```{r}
+# Prepare Wide Matrix (subject_id vs Proteins)
+df_wide <- df_csf_meta %>%
+  dplyr::select(subject_id, Analyte, protein_level) %>%
+  pivot_wider(names_from = Analyte, values_from = protein_level) %>%
+  column_to_rownames("subject_id")
+
+# Subset for proteins with significant expression between PWH and PWoH
+pca_matrix_clean <- df_wide
+
+# Run PCA
+pca_res <- prcomp(pca_matrix_clean, center = TRUE, scale. = TRUE)
+
+# Extract PC1 and Merge with Metadata
+metadata_lookup <- df_csf_meta %>% dplyr::select(subject_id, HIV_status) %>% distinct()
+
+df_pca_scored <- data.frame(
+                    subject_id = rownames(pca_res$x), 
+                    prot_score_PC1 = pca_res$x[, "PC1"],
+                    prot_score_PC2 = pca_res$x[, "PC2"]) %>%
+  left_join(metadata_lookup, by = "subject_id") %>%
+  dplyr::select(subject_id, prot_score_PC1, prot_score_PC2, everything())
+
+# clean up
+rm(metadata_lookup)
+```
+
+```{r}
+# add PCA score
+df_pca_scored <- df_pca_scored %>%
+  separate(subject_id, into = c("subject_id", "visit"), sep = "_") %>%
+  mutate(visit = case_when(
+    visit == "v1" ~ "Baseline",          
+    TRUE ~ str_replace(visit, "v", "Visit ") .
+  ))
+
+# match scores
+gene_PC_cor <- left_join(gene_protein_cor, df_pca_scored, by = c("subject_id", "visit", "HIV_status")) %>%
+                  dplyr::select(-c(Analyte, protein_level)) %>%
+                  distinct()
+```
