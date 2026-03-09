@@ -11,6 +11,7 @@ We performed integrative multi-omic profiling of:
 ### Data Types
 - **scRNA-seq & scBCR-seq:** 10x Genomics 5′ V(D)J platform.
 - **snRNA-seq & snATAC-seq:** 10x Genomics Multiome (ATAC + Gene Expression).
+- **Proteomics:** Human Cytokine 96-Plex Discovery Assay (HD96, Eve Technologies)
 
 ### Data Processing
 - **RNA-seq:**  Cell Ranger v7.0.0, Seurat v5.2.0.
