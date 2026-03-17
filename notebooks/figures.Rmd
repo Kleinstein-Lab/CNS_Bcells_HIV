@@ -27,22 +27,11 @@ p1 + p2 + plot_layout(widths = c(1, 2.1), guides = "collect")
 ### Panel B
 
 ```{r}
-p2A <- UMAPPlot(gex_B_ART, group.by = "annotated_clusters_B", raster = FALSE, label = TRUE, label.box = TRUE, repel = TRUE) + 
+UMAPPlot(gex_B_ART, group.by = "annotated_clusters_B", raster = FALSE, label = FALSE, label.box = TRUE, repel = TRUE) + 
   scale_fill_manual(values = rep("#FFFFFF", length(gex_B_ART$annotated_clusters_B))) +
   labs(title = "UMAP of B Cell Subtypes") +
   NoLegend() + clean_umap
-
-p2B <- UMAPPlot(gex_B_ART, pt.size = 0.5, sizes.highlight = 0.1, raster = FALSE, repel = TRUE,
-         group.by = "annotated_clusters_B", label = FALSE, label.box = TRUE,
-         cells.highlight = Cells(gex_B_ART)[which(gex_B_ART$contains_bcr)]) + 
-    scale_fill_manual(values = rep("#FFFFFF", length(gex_B_ART$annotated_clusters_B))) +
-    labs(title = "BCRs highlighted") +
-    NoLegend() + clean_umap
-
-p2A + p2B
 ```
-
-### Panel C
 
 ```{r}
 plot_pcts(calc_pcts(data = gex_B_ART[[]], meta_group_by = c("subject_id", "HIV_status", "tissue"), focus_group = "annotated_clusters_B"), 
@@ -50,7 +39,7 @@ plot_pcts(calc_pcts(data = gex_B_ART[[]], meta_group_by = c("subject_id", "HIV_s
           tissue_type = "", plot_value = "Cell Type",  x_axis_label = "Participant", fill_label = "", details = NULL,
           remove_pct = TRUE, remove_count = TRUE, perc_min = 3, label_size = 3, label_fill = FALSE, drop_zeroes = TRUE, draw_border = FALSE, 
           clrs_specific = c("Atypical Memory" = "#F8766D", "Resting Memory" = "#C77CFF", "Naive" = "#7CAE00", "Plasmablasts" = "#00BFC4")) +
-  labs(title = "Cell Type Frequencies per Participant", x = "Participants", y = "Cell Type Percentage \n(% of B cells)") +
+  labs(title = "Cell type frequencies per participant", x = "Participants", y = "Cell type percentage \n(% of B cells)") +
   facet_grid(tissue ~ HIV_status, scales = "free_x", 
              labeller = labeller(HIV_status = c(control = "PWoH"),
                                  tissue = c(PBMC = "Blood"))) +
@@ -67,7 +56,7 @@ plot_pcts(calc_pcts(data = gex_B_ART[[]], meta_group_by = c("subject_id", "HIV_s
         legend.position = "top")
 ```
 
-### Panel D
+### Panel C
 
 ```{r}
 # calculate cell frequencies among B cells
@@ -161,7 +150,7 @@ p4B <- p4B + theme(legend.position = "none")
                   theme = theme(plot.title = element_text(hjust = 0.5, face = "bold")))
 ```
 
-### Panel E
+### Panel D
 
 ```{r}
 # generate dotplot
@@ -192,7 +181,6 @@ plot_dot_side(p, gex_B_ART, row_identity = "annotated_clusters_B",
 ### PCA - CSF group 1 - CSF MBC
 # create DESeq objects
 object_DESeq2 <- deseq2_CSF_B_gex$DESeq2_objs$`Resting Memory`
-pca_cell_type <- "MBC"
 pca_tissue <- "CSF"
 pca_n_features <- 500
 
@@ -208,11 +196,9 @@ p1 <- plotPCA(dds_vst, intgroup = "group", ntop = pca_n_features) +
                      labels = c("control" = "PWoH", "PWH" = "PWH")) +
   scale_fill_manual(values = col_HIV_status_PCA, name = "HIV Status",
                      labels = c("control" = "PWoH", "PWH" = "PWH")) +
-  labs(title = paste("PCA of", pca_tissue, pca_cell_type),
-       subtitle = paste("CSF group 1")) +
+  labs(title = paste("CSF group 1", pca_tissue)) +
   theme_bw +
   theme(plot.title = element_text(size = 14, hjust = 0.5, face = "bold"),
-        plot.subtitle = element_text(size = 13, hjust = 0.5),
         axis.title.x = element_text(size = 14),
         axis.title.y = element_text(size = 14),
         panel.grid.major.y = element_blank(),
@@ -223,19 +209,18 @@ p1 <- plotPCA(dds_vst, intgroup = "group", ntop = pca_n_features) +
         plot.margin = unit(c(0.5, 0.5, 0.5, 0.5), "cm"))
 
 # remove objects
-rm(pca_cell_type, pca_tissue, dds_vst)
+rm(pca_tissue, dds_vst)
 ```
 
 ```{r}
 ### PCA - CSF group 1 - blood MBC
 # create DESeq objects
 object_DESeq2 <- deseq2_PBMC_B_gex$DESeq2_objs$`Resting Memory`
-pca_cell_type <- "MBC"
 pca_tissue <- "Blood"
 pca_n_features <- 500
 
 # normalize using vst
-dds_vst <- varianceStabilizingTransformation(object_DESeq2, blind = TRUE)
+dds_vst <- DESeq2::varianceStabilizingTransformation(object_DESeq2, blind = TRUE)
 
 # plot PCA
 p2 <- plotPCA(dds_vst, intgroup = "group", ntop = pca_n_features) + 
@@ -246,11 +231,9 @@ p2 <- plotPCA(dds_vst, intgroup = "group", ntop = pca_n_features) +
                      labels = c("control" = "PWoH", "PWH" = "PWH")) +
   scale_fill_manual(values = col_HIV_status_PCA, name = "HIV Status",
                      labels = c("control" = "PWoH", "PWH" = "PWH")) +
-  labs(title = paste("PCA of", pca_tissue, pca_cell_type),
-       subtitle = paste("CSF group 1")) +
+  labs(title = paste("CSF group 1", pca_tissue)) +
   theme_bw +
   theme(plot.title = element_text(size = 14, hjust = 0.5, face = "bold"),
-        plot.subtitle = element_text(size = 13, hjust = 0.5),
         axis.title.x = element_text(size = 14),
         axis.title.y = element_text(size = 14),
         panel.grid.major.y = element_blank(),
@@ -260,19 +243,18 @@ p2 <- plotPCA(dds_vst, intgroup = "group", ntop = pca_n_features) +
         plot.margin = unit(c(0.5, 0.5, 0.5, 0.5), "cm"))
 
 # remove objects
-rm(pca_cell_type, pca_tissue, dds_vst)
+rm(pca_tissue, dds_vst)
 ```
 
 ```{r}
 ### PCA - CSF group 2 - CSF MBC
 # create DESeq objects
 object_DESeq2 <- deseq2_multi_CSF_B_gex$DESeq2_objs$`Resting Memory`
-pca_cell_type <- "MBC"
 pca_tissue <- "CSF"
 pca_n_features <- 500
 
 # normalize using vst
-dds_vst <- varianceStabilizingTransformation(object_DESeq2, blind = TRUE)
+dds_vst <- DESeq2::varianceStabilizingTransformation(object_DESeq2, blind = TRUE)
 
 # plot PCA
 p3 <- plotPCA(dds_vst, intgroup = "group", ntop = pca_n_features) + 
@@ -283,11 +265,9 @@ p3 <- plotPCA(dds_vst, intgroup = "group", ntop = pca_n_features) +
                      labels = c("control" = "PWoH", "PWH" = "PWH")) +
   scale_fill_manual(values = col_HIV_status_PCA, name = "HIV Status",
                      labels = c("control" = "PWoH", "PWH" = "PWH")) +
-  labs(title = paste("PCA of", pca_tissue, pca_cell_type),
-       subtitle = "CSF group 2") +
+  labs(title = paste("CSF group 2", pca_tissue)) +
   theme_bw +
   theme(plot.title = element_text(size = 14, hjust = 0.5, face = "bold"),
-        plot.subtitle = element_text(size = 13, hjust = 0.5),
         axis.title.x = element_text(size = 14),
         axis.title.y = element_text(size = 14),
         panel.grid.major.y = element_blank(),
@@ -297,19 +277,18 @@ p3 <- plotPCA(dds_vst, intgroup = "group", ntop = pca_n_features) +
         plot.margin = unit(c(0.5, 0.5, 0.5, 0.5), "cm"))
 
 # remove objects
-rm(pca_cell_type, pca_tissue, dds_vst)
+rm(pca_tissue, dds_vst)
 ```
 
 ```{r}
 ### PCA - CSF group 2 - Blood MBC
 # create DESeq objects
 object_DESeq2 <- deseq2_multi_PBMC_B_gex$DESeq2_objs$`Resting Memory`
-pca_cell_type <- "MBC"
 pca_tissue <- "Blood"
 pca_n_features <- 500
 
 # normalize using vst
-dds_vst <- varianceStabilizingTransformation(object_DESeq2, blind = TRUE)
+dds_vst <- DESeq2::varianceStabilizingTransformation(object_DESeq2, blind = TRUE)
 
 # plot PCA
 p4 <- plotPCA(dds_vst, intgroup = "group", ntop = pca_n_features) + 
@@ -320,11 +299,9 @@ p4 <- plotPCA(dds_vst, intgroup = "group", ntop = pca_n_features) +
                      labels = c("control" = "PWoH", "PWH" = "PWH")) +
   scale_fill_manual(values = col_HIV_status_PCA, name = "HIV Status",
                      labels = c("control" = "PWoH", "PWH" = "PWH")) +
-  labs(title = paste("PCA of", pca_tissue, pca_cell_type),
-       subtitle = "CSF group 2") +
+  labs(title = paste("CSF group 2", pca_tissue)) +
   theme_bw +
   theme(plot.title = element_text(size = 14, hjust = 0.5, face = "bold"),
-        plot.subtitle = element_text(size = 13, hjust = 0.5),
         axis.title.x = element_text(size = 14),
         axis.title.y = element_text(size = 14),
         panel.grid.major.y = element_blank(),
@@ -334,7 +311,7 @@ p4 <- plotPCA(dds_vst, intgroup = "group", ntop = pca_n_features) +
         plot.margin = unit(c(0.5, 0.5, 0.5, 0.5), "cm"))
 
 # remove objects
-rm(pca_cell_type, pca_tissue, dds_vst)
+rm(pca_tissue, dds_vst)
 ```
 
 ```{r}
@@ -1215,7 +1192,10 @@ ggplot(exp_clones_data, aes(x = subject_id, y = percentage, fill = category)) +
 
 ```{r}
 # mu_freq over all cells
-plot_mu_freq(gex_B_ART, "") + labs(title = "SHM Frequency Across \nB cell Subtypes", subtitle = "") + clean_umap
+plot_mu_freq(gex_B_ART, "", plot_label = FALSE) + 
+  labs(title = NULL, 
+       subtitle = NULL) + 
+  clean_umap
 ```
 
 ### Panel F

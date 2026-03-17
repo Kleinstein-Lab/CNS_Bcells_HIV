@@ -642,7 +642,7 @@ plot_mu_freq <- function(seurat_obj, tissue_type,
   # set up the plot
   p <- FeaturePlot(seurat_obj, features = "mu_freq", pt.size = 0.2,
                    order = TRUE, label = plot_label, label.size = label_size,
-                   raster = FALSE) +
+                   raster = FALSE, repel = TRUE) +
          labs(title = paste(tissue_type, "Mutation Frequencies"),
               subtitle = paste0("Max: ", percent(max_freq), ", Mean: ",
                                 percent(mean(seurat_obj$mu_freq, na.rm = TRUE)))) +
