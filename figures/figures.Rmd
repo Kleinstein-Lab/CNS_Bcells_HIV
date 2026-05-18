@@ -1,59 +1,98 @@
+---
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
 # Main Figures
+
+## Fig 1
+
+Figure 1 was generated in Biorender.
 
 ## Fig 2
 
 ### Panel A
 
 ```{r}
-# plot UMAP per tissue
-UMAPPlot(gex_ART, split.by = "tissue", group.by = "annotated_clusters_all_ref", 
+# plot UMAP for both tissues combined
+p1 <- UMAPPlot(gex_ART, group.by = "annotated_clusters_all_ref", 
          raster = FALSE, label = FALSE, 
          cols = colorRampPalette(RColorBrewer::brewer.pal(12, "Set1"))(length(levels(gex_ART$annotated_clusters_all_ref)))) + 
-  labs(title = "UMAP of Cell Subtypes in Blood and CSF") +
+  labs(title = NULL) +
+  clean_umap
+
+# plot UMAP per tissue
+p2 <- UMAPPlot(gex_ART, split.by = "tissue", group.by = "annotated_clusters_all_ref", 
+         raster = FALSE, label = FALSE, 
+         cols = colorRampPalette(RColorBrewer::brewer.pal(12, "Set1"))(length(levels(gex_ART$annotated_clusters_all_ref)))) + 
+  labs(title = NULL) +
   facet_wrap(~ tissue, ncol = 2, labeller = labeller(tissue = c("PBMC" = "Blood"))) +
   clean_umap
+
+# wrap plots
+fig_panel <- p1 + p2 + plot_layout(widths = c(1, 2.1), guides = "collect")
+
+# Save image
+current_size <- dev.size("in")
+ggsave("plots/fig2A.png", 
+       plot = fig_panel, 
+       width = current_size[1], 
+       height = current_size[2], 
+       units = "in",
+       dpi = 1200)
 ```
 
 ### Panel B
 
 ```{r}
-p2A <- UMAPPlot(gex_B_ART, group.by = "annotated_clusters_B", raster = FALSE, label = TRUE, label.box = TRUE, repel = TRUE) + 
+fig_panel <- UMAPPlot(gex_B_ART, group.by = "annotated_clusters_B", raster = FALSE, label = FALSE, label.box = TRUE, repel = TRUE) + 
   scale_fill_manual(values = rep("#FFFFFF", length(gex_B_ART$annotated_clusters_B))) +
-  labs(title = "UMAP of B Cell Subtypes") +
+  labs(title = NULL) +
   NoLegend() + clean_umap
 
-p2B <- UMAPPlot(gex_B_ART, pt.size = 0.5, sizes.highlight = 0.1, raster = FALSE, repel = TRUE,
-         group.by = "annotated_clusters_B", label = FALSE, label.box = TRUE,
-         cells.highlight = Cells(gex_B_ART)[which(gex_B_ART$contains_bcr)]) + 
-    scale_fill_manual(values = rep("#FFFFFF", length(gex_B_ART$annotated_clusters_B))) +
-    labs(title = "BCRs highlighted") +
-    NoLegend() + clean_umap
-
-p2A + p2B
+# Save image
+current_size <- dev.size("in")
+ggsave("plots/fig2B.png", 
+       plot = fig_panel, 
+       width = current_size[1], 
+       height = current_size[2], 
+       units = "in",
+       dpi = 1200)    
 ```
 
-### Panel C
-
 ```{r}
-plot_pcts(calc_pcts(data = gex_B_ART[[]], meta_group_by = c("subject_id", "HIV_status", "tissue"), focus_group = "annotated_clusters_B"), 
+fig_panel <- plot_pcts(calc_pcts(data = gex_B_ART[[]], meta_group_by = c("subject_id", "HIV_status", "tissue"), focus_group = "annotated_clusters_B"), 
           plot_type = "All", x_axis = "subject_id", fill_type = "annotated_clusters_B", count_by = c("subject_id", "tissue"),
           tissue_type = "", plot_value = "Cell Type",  x_axis_label = "Participant", fill_label = "", details = NULL,
           remove_pct = TRUE, remove_count = TRUE, perc_min = 3, label_size = 3, label_fill = FALSE, drop_zeroes = TRUE, draw_border = FALSE, 
           clrs_specific = c("Atypical Memory" = "#F8766D", "Resting Memory" = "#C77CFF", "Naive" = "#7CAE00", "Plasmablasts" = "#00BFC4")) +
-  labs(title = "Cell Type Frequencies per Participant", x = "Participants", y = "Cell Type Percentage \n(% of B cells)") +
+  labs(title = NULL, x = "Participants", y = "Cell type percentage (% of B cells)") +
   facet_grid(tissue ~ HIV_status, scales = "free_x", 
              labeller = labeller(HIV_status = c(control = "PWoH"),
                                  tissue = c(PBMC = "Blood"))) +
-  #scale_y_continuous(labels = label_percent(scale = 1), expand = expansion(mult = 0.08)) +
+  scale_fill_manual(values = c("Atypical Memory" = "#F8766D", "Resting Memory" = "#C77CFF", "Naive" = "#7CAE00", "Plasmablasts" = "#00BFC4"),
+                    labels = function(x) stringr::str_wrap(x, width = 10)) +
   theme(axis.text.x = element_blank(),
+        axis.text.y = element_text(size = 10),
         axis.ticks.x = element_blank(),
-        axis.title.y = element_text(size = 12),
+        axis.title.y = element_text(size = 14),
         axis.title.x = element_text(size = 14),
+        legend.text = element_text(size = 12),
+        strip.text = element_text(size = 12),
         plot.title = element_text(size = 12, hjust = 0.5, face = "bold"),
         legend.position = "top")
+
+# Save image
+current_size <- dev.size("in")
+ggsave("plots/fig2B_2.png", 
+       plot = fig_panel, 
+       width = current_size[1], 
+       height = current_size[2], 
+       units = "in",
+       dpi = 1200)  
 ```
 
-### Panel D
+### Panel C
 
 ```{r}
 # calculate cell frequencies among B cells
@@ -78,7 +117,7 @@ label_data <- B_freq_B %>%
   left_join(cluster_order, by = c("cluster", "tissue")) %>%
   mutate(y_position = ifelse(HIV_status == "control", -0.04, -0.08))
 
-# plot frequencies
+# plot frequencies for PBMC
 p4A <- ggplot(B_freq_B %>% dplyr::filter(tissue == "PBMC"), aes(x = tidytext::reorder_within(cluster, -frequency, tissue,FUN = median), y = frequency, fill = HIV_status)) +
   geom_boxplot(position = position_dodge(width = 0.8), width = 0.7, outlier.shape = NA) +
   geom_jitter(aes(color = "black"), position = position_dodge(width = 0.8), alpha = 1) +
@@ -90,11 +129,12 @@ p4A <- ggplot(B_freq_B %>% dplyr::filter(tissue == "PBMC"), aes(x = tidytext::re
   scale_color_manual(values = col_HIV_status_PCA, guide = "none") +
   scale_y_continuous(labels = scales::label_percent(scale = 100), breaks = seq(0, 1, 0.2), expand = expansion(mult = c(0.1, 0.1))) +
   tidytext::scale_x_reordered() +
-  labs(x = "Cluster",y = "Cell Type Percentage \n(% of B cells)", fill = "HIV status") +
+  labs(x = NULL,y = "Cell Type Percentage (% of B cells)", fill = "HIV status") +
   facet_wrap(~ tissue, scales = "free", ncol = 2, labeller = labeller(tissue = c(PBMC = "Blood"))) +
   theme_bw +
   theme(plot.title = element_text(size = 15, hjust = 0.5, face = "bold"), 
         axis.text.x = element_text(size = 12, hjust = 1, angle = 45),
+        axis.text.y = element_text(size = 12),
         axis.title.x = element_text(size = 14),
         axis.title.y = element_text(size = 14),
         strip.text = element_text(size = 12),
@@ -115,7 +155,7 @@ label_data <- B_freq_B %>%
   left_join(cluster_order, by = c("cluster", "tissue")) %>%
   mutate(y_position = ifelse(HIV_status == "control", -0.03, -0.08))
 
-# plot frequencies
+# plot frequencies for CSF
 p4B <- ggplot(B_freq_B %>% dplyr::filter(tissue == "CSF" & cluster %in% c("Resting Memory", "Naive")), aes(x = tidytext::reorder_within(cluster, -frequency, tissue,FUN = median), y = frequency, fill = HIV_status)) +
   geom_boxplot(position = position_dodge(width = 0.8), width = 0.7, outlier.shape = NA) +
   geom_jitter(aes(color = "black"), position = position_dodge(width = 0.8), alpha = 1) +
@@ -127,11 +167,12 @@ p4B <- ggplot(B_freq_B %>% dplyr::filter(tissue == "CSF" & cluster %in% c("Resti
   scale_color_manual(values = col_HIV_status_PCA, guide = "none") +
   scale_y_continuous(labels = scales::label_percent(scale = 100), breaks = seq(0, 1, 0.2), expand = expansion(mult = c(0.1, 0.1))) +
   tidytext::scale_x_reordered() +
-  labs(x = "Cluster", y = "Cell Type Percentage \n(% of B cells)", fill = "HIV status") +
+  labs(x = NULL, y = "Cell Type Percentage (% of B cells)", fill = "HIV status") +
   facet_wrap(~ tissue, scales = "free", ncol = 2, labeller = labeller(tissue = c(PBMC = "Blood"))) +
   theme_bw +
   theme(plot.title = element_text(size = 15, hjust = 0.5, face = "bold"), 
-        axis.text.x = element_text(size = 12, hjust = 1, angle = 45),
+        axis.text.x = element_text(size = 14, hjust = 1, angle = 45),
+        axis.text.y = element_text(size = 12),
         axis.title.x = element_text(size = 14),
         axis.title.y = element_text(size = 14),
         strip.text = element_text(size = 12),
@@ -142,33 +183,47 @@ p4B <- ggplot(B_freq_B %>% dplyr::filter(tissue == "CSF" & cluster %in% c("Resti
 ```{r}
 p4B <- p4B + theme(legend.position = "none")
 
-(p4A + p4B + plot_layout(axis_titles = "collect", widths = c(2, 1))) + 
-  plot_annotation(title = "B Cell Subtype Frequencies Across B Cells",
-                  theme = theme(plot.title = element_text(hjust = 0.5, face = "bold")))
+fig_panel <- (p4A + p4B + plot_layout(axis_titles = "collect", widths = c(2, 1)))
+
+# save image
+current_size <- dev.size("in")
+ggsave("plots/fig2C.png", 
+       plot = fig_panel, 
+       width = current_size[1], 
+       height = current_size[2], 
+       units = "in",
+       dpi = 1200) 
 ```
 
-### Panel E
+### Panel D
 
 ```{r}
 # generate dotplot
-p <- DotPlot(gex_B_ART, features = unique(markers_b$Marker), group.by = "annotated_clusters_B", cluster.idents = TRUE, scale = TRUE) %>%
-  add_info_bar(method = "join", 
-               info_type = "Cell_Type_Full",
-               info = markers_b %>%
-                 dplyr::select(Cell_Type_Full, Marker) %>%
-                 dplyr::rename(features.plot = Marker),
-               text_size = 6, label = FALSE) + RotatedAxis() +
+p <- DotPlot(gex_B_ART, 
+             features = unique(markers_b$Marker), 
+             group.by = "annotated_clusters_B", 
+             cluster.idents = TRUE, scale = TRUE) + 
+  RotatedAxis() +
   scale_colour_gradient2(low = "blue", high = "red") +
-  labs(x = "", y = "", title = "B Cell Marker Genes in CSF (Group 1)") +
+  labs(x = "", y = "", title = NULL) +
     theme(strip.text.x = element_text(size = 12),
           axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1),
           plot.title = element_text(hjust = 0.5, size = 12),
           plot.subtitle = element_text(hjust = 0.5))
 
 # plot side metrics
-plot_dot_side(p, gex_B_ART, row_identity = "annotated_clusters_B",
-              facet_col = "Cell_Type_Full", info_to_add = c("cluster_size", "mean_mu_freq", "percent_BCR")) +
+fig_panel <- plot_dot_side(p, gex_B_ART, row_identity = "annotated_clusters_B",
+              info_to_add = c("cluster_size", "mean_mu_freq", "percent_BCR")) +
   labs(subtitle = "Right side stats: total counts | mean mutation frequency | percent BCR")
+
+# save image
+current_size <- dev.size("in")
+ggsave("plots/fig2D.png", 
+       plot = fig_panel, 
+       width = current_size[1], 
+       height = current_size[2], 
+       units = "in",
+       dpi = 1200) 
 ```
 
 
@@ -180,12 +235,11 @@ plot_dot_side(p, gex_B_ART, row_identity = "annotated_clusters_B",
 ### PCA - CSF group 1 - CSF MBC
 # create DESeq objects
 object_DESeq2 <- deseq2_CSF_B_gex$DESeq2_objs$`Resting Memory`
-pca_cell_type <- "MBC"
 pca_tissue <- "CSF"
 pca_n_features <- 500
 
 # normalize using vst
-dds_vst <- varianceStabilizingTransformation(object_DESeq2, blind = TRUE)
+dds_vst <- DESeq2::varianceStabilizingTransformation(object_DESeq2, blind = TRUE)
 
 # plot PCA
 p1 <- plotPCA(dds_vst, intgroup = "group", ntop = pca_n_features) + 
@@ -196,33 +250,33 @@ p1 <- plotPCA(dds_vst, intgroup = "group", ntop = pca_n_features) +
                      labels = c("control" = "PWoH", "PWH" = "PWH")) +
   scale_fill_manual(values = col_HIV_status_PCA, name = "HIV Status",
                      labels = c("control" = "PWoH", "PWH" = "PWH")) +
-  labs(title = paste("PCA of", pca_tissue, pca_cell_type),
-       subtitle = paste("CSF group 1")) +
+  labs(title = NULL) +
+  #labs(title = paste("CSF group 1", pca_tissue)) +
   theme_bw +
   theme(plot.title = element_text(size = 14, hjust = 0.5, face = "bold"),
-        plot.subtitle = element_text(size = 13, hjust = 0.5),
         axis.title.x = element_text(size = 14),
         axis.title.y = element_text(size = 14),
+        axis.text = element_text(size = 12),
         panel.grid.major.y = element_blank(),
         panel.grid.major.x = element_blank(),
         panel.grid.minor.x = element_blank(),
         panel.grid.minor.y = element_blank(),
+        legend.position = "top",
         plot.margin = unit(c(0.5, 0.5, 0.5, 0.5), "cm"))
 
 # remove objects
-rm(pca_cell_type, pca_tissue, dds_vst)
+rm(pca_tissue, dds_vst)
 ```
 
 ```{r}
 ### PCA - CSF group 1 - blood MBC
 # create DESeq objects
 object_DESeq2 <- deseq2_PBMC_B_gex$DESeq2_objs$`Resting Memory`
-pca_cell_type <- "MBC"
 pca_tissue <- "Blood"
 pca_n_features <- 500
 
 # normalize using vst
-dds_vst <- varianceStabilizingTransformation(object_DESeq2, blind = TRUE)
+dds_vst <- DESeq2::varianceStabilizingTransformation(object_DESeq2, blind = TRUE)
 
 # plot PCA
 p2 <- plotPCA(dds_vst, intgroup = "group", ntop = pca_n_features) + 
@@ -233,13 +287,13 @@ p2 <- plotPCA(dds_vst, intgroup = "group", ntop = pca_n_features) +
                      labels = c("control" = "PWoH", "PWH" = "PWH")) +
   scale_fill_manual(values = col_HIV_status_PCA, name = "HIV Status",
                      labels = c("control" = "PWoH", "PWH" = "PWH")) +
-  labs(title = paste("PCA of", pca_tissue, pca_cell_type),
-       subtitle = paste("CSF group 1")) +
+  labs(title = NULL) +
+  #labs(title = paste("CSF group 1", pca_tissue)) +
   theme_bw +
   theme(plot.title = element_text(size = 14, hjust = 0.5, face = "bold"),
-        plot.subtitle = element_text(size = 13, hjust = 0.5),
         axis.title.x = element_text(size = 14),
         axis.title.y = element_text(size = 14),
+        axis.text = element_text(size = 12),
         panel.grid.major.y = element_blank(),
         panel.grid.major.x = element_blank(),
         panel.grid.minor.x = element_blank(),
@@ -247,19 +301,18 @@ p2 <- plotPCA(dds_vst, intgroup = "group", ntop = pca_n_features) +
         plot.margin = unit(c(0.5, 0.5, 0.5, 0.5), "cm"))
 
 # remove objects
-rm(pca_cell_type, pca_tissue, dds_vst)
+rm(pca_tissue, dds_vst)
 ```
 
 ```{r}
 ### PCA - CSF group 2 - CSF MBC
 # create DESeq objects
 object_DESeq2 <- deseq2_multi_CSF_B_gex$DESeq2_objs$`Resting Memory`
-pca_cell_type <- "MBC"
 pca_tissue <- "CSF"
 pca_n_features <- 500
 
 # normalize using vst
-dds_vst <- varianceStabilizingTransformation(object_DESeq2, blind = TRUE)
+dds_vst <- DESeq2::varianceStabilizingTransformation(object_DESeq2, blind = TRUE)
 
 # plot PCA
 p3 <- plotPCA(dds_vst, intgroup = "group", ntop = pca_n_features) + 
@@ -270,13 +323,13 @@ p3 <- plotPCA(dds_vst, intgroup = "group", ntop = pca_n_features) +
                      labels = c("control" = "PWoH", "PWH" = "PWH")) +
   scale_fill_manual(values = col_HIV_status_PCA, name = "HIV Status",
                      labels = c("control" = "PWoH", "PWH" = "PWH")) +
-  labs(title = paste("PCA of", pca_tissue, pca_cell_type),
-       subtitle = "CSF group 2") +
+  labs(title = NULL) +
+  #labs(title = paste("CSF group 2", pca_tissue)) +
   theme_bw +
   theme(plot.title = element_text(size = 14, hjust = 0.5, face = "bold"),
-        plot.subtitle = element_text(size = 13, hjust = 0.5),
         axis.title.x = element_text(size = 14),
         axis.title.y = element_text(size = 14),
+        axis.text = element_text(size = 12),
         panel.grid.major.y = element_blank(),
         panel.grid.major.x = element_blank(),
         panel.grid.minor.x = element_blank(),
@@ -284,19 +337,18 @@ p3 <- plotPCA(dds_vst, intgroup = "group", ntop = pca_n_features) +
         plot.margin = unit(c(0.5, 0.5, 0.5, 0.5), "cm"))
 
 # remove objects
-rm(pca_cell_type, pca_tissue, dds_vst)
+rm(pca_tissue, dds_vst)
 ```
 
 ```{r}
 ### PCA - CSF group 2 - Blood MBC
 # create DESeq objects
 object_DESeq2 <- deseq2_multi_PBMC_B_gex$DESeq2_objs$`Resting Memory`
-pca_cell_type <- "MBC"
 pca_tissue <- "Blood"
 pca_n_features <- 500
 
 # normalize using vst
-dds_vst <- varianceStabilizingTransformation(object_DESeq2, blind = TRUE)
+dds_vst <- DESeq2::varianceStabilizingTransformation(object_DESeq2, blind = TRUE)
 
 # plot PCA
 p4 <- plotPCA(dds_vst, intgroup = "group", ntop = pca_n_features) + 
@@ -307,13 +359,13 @@ p4 <- plotPCA(dds_vst, intgroup = "group", ntop = pca_n_features) +
                      labels = c("control" = "PWoH", "PWH" = "PWH")) +
   scale_fill_manual(values = col_HIV_status_PCA, name = "HIV Status",
                      labels = c("control" = "PWoH", "PWH" = "PWH")) +
-  labs(title = paste("PCA of", pca_tissue, pca_cell_type),
-       subtitle = "CSF group 2") +
+  labs(title = NULL) +
+  #labs(title = paste("CSF group 2", pca_tissue)) +
   theme_bw +
   theme(plot.title = element_text(size = 14, hjust = 0.5, face = "bold"),
-        plot.subtitle = element_text(size = 13, hjust = 0.5),
         axis.title.x = element_text(size = 14),
         axis.title.y = element_text(size = 14),
+        axis.text = element_text(size = 12),
         panel.grid.major.y = element_blank(),
         panel.grid.major.x = element_blank(),
         panel.grid.minor.x = element_blank(),
@@ -321,12 +373,20 @@ p4 <- plotPCA(dds_vst, intgroup = "group", ntop = pca_n_features) +
         plot.margin = unit(c(0.5, 0.5, 0.5, 0.5), "cm"))
 
 # remove objects
-rm(pca_cell_type, pca_tissue, dds_vst)
+rm(pca_tissue, dds_vst)
 ```
 
 ```{r}
 # combine PCAs
-(p1 + p2) / (p3 + p4) + plot_layout(guides = "collect", nrow = 2)
+fig_panel <- (p1 + p2) / (p3 + p4) + plot_layout(guides = "collect", nrow = 2)
+
+current_size <- dev.size("in")
+ggsave("plots/fig3A.png", 
+       plot = fig_panel, 
+       width = current_size[1], 
+       height = current_size[2], 
+       units = "in",
+       dpi = 1200) 
 ```
 
 ### Panel B
@@ -386,6 +446,38 @@ ComplexHeatmap::pheatmap(deg_counts,
          annotation_colors = annot_colors,
          heatmap_legend_param = list(title = "Scaled \nExpression"),
          main = title)
+
+current_size <- dev.size("in")
+
+# save image
+png("plots/fig3B.png", 
+    width = current_size[1], 
+    height = current_size[2], 
+    units = "in", 
+    res = 600)
+
+ComplexHeatmap::pheatmap(deg_counts,
+         scale = "row",
+         clustering_method = "ward.D2",
+         annotation_col = meta.heatmap,
+         annotation_names_col = FALSE,
+         show_rownames = TRUE, 
+         show_colnames = FALSE,
+         fontsize_row = 10,
+         fontsize_col = 10,
+         fontsize = 10,
+         angle_col = "315",
+         #cutree_cols = 2,
+         cluster_rows = TRUE,
+         border_color = NA,
+         color = colors,
+         legend = TRUE,
+         annotation_legend = TRUE,
+         annotation_colors = annot_colors,
+         heatmap_legend_param = list(title = "Scaled \nExpression"),
+         main = title)
+
+dev.off()
 ```
 
 ### Panel C
@@ -490,67 +582,84 @@ plot_dots_combined <- bind_rows(plot_dots_BCR, plot_dots_multiome) %>%
   mutate(Description = factor(Description, levels = desc_order_BCR))
 
 # plot data
-ggplot(plot_dots_combined, aes(x = gene_ratio, y = Description, fill = qvalue)) +
+fig_panel <- ggplot(plot_dots_combined, aes(x = gene_ratio, y = Description, fill = qvalue)) +
   geom_col(color = "black", width = 0.7) +
   scale_fill_continuous(low = "#e31a1c", high = "#810f7c") +
   scale_y_discrete(labels = function(labels) str_wrap(labels, width = 80), position = "right") +
   facet_grid(category ~ cohort, scales = "free", space = "free_y", switch = "y",
              labeller = labeller(category = label_wrap_gen(width = 30))) +
   labs(
-    title    = "Downregulated Pathways in CSF MBC of PWH",
-    subtitle = "Gene Set Enrichment Analysis - REACTOME Pathways",
+    title    = NULL,
+    subtitle = NULL,
     x        = "Gene Ratio",
-    y        = "",
+    y        = NULL,
     fill     = "FDR q-value") +
   theme_minimal() +
   theme(
     plot.title         = element_text(size = 14, hjust = 0.5, face = "bold"),
     plot.subtitle      = element_text(size = 11, hjust = 0.5),
-    axis.text.y        = element_text(size = 12, color = "black"),
-    axis.text.x        = element_text(size = 9,  color = "black"),
-    axis.title.x       = element_text(size = 12),
-    strip.text.x       = element_text(size = 12, color = "darkblue", face = "bold"),
-    strip.text.y       = element_text(size = 12, color = "darkgreen",  face = "bold"),
+    axis.text.y        = element_text(size = 12, color = "black", hjust = 0),
+    axis.text.x        = element_text(size = 12,  color = "black"),
+    axis.title.x       = element_text(size = 14),
+    strip.text.x       = element_text(size = 12, color = "black"),
+    strip.text.y       = element_text(size = 14, color = "black"),
     panel.border       = element_rect(color = "black", fill = NA, linewidth = 1),
     panel.grid.major   = element_blank(),
     panel.grid.minor   = element_blank(),
+    legend.text        = element_text(size = 11),
+    legend.title       = element_text(size = 12),
     legend.position    = "left"
   )
+
+current_size <- dev.size("in")
+ggsave("plots/fig3C.png", 
+       plot = fig_panel, 
+       width = current_size[1], 
+       height = current_size[2], 
+       units = "in",
+       dpi = 1200) 
 ```
 
 ### Panel D
 
 ```{r}
 # set genes of interest for activation, migration and chemokine signaling
-b_cell_activation_genes <- c("CD69", "CD80", "CD86", "CD83", "CD40", "TFRC", "FAS", "AICDA", "IRF4")
+b_cell_activation_genes <- c("CD69", "CD80", "CD86", "CD83", "CD40", "AICDA", "IRF4", "ICOSLG", "MYC", "TFRC")
 migration_genes <- c("S1PR1", "PLCG2", "DOCK2", "RAC2", "CD44", "BSG", "S1PR2", "MMP9", "ITGA4", "ITGB1", 
                      "ITGB2", "ITGB7", "ITGAM","ITGAX", "SELL", "ICAM3", "ICAM2", "ICAM1", "VCAM1", "SELPLG")
 chemokine_genes <- c("CXCR4", "CXCR5", "CXCR3", "CCR7",  "CCR6", "CXCL13", "CCL19", "CCL21", "CXCL12",  "ACKR3", "CCL5", "CXCL16")
 
 # Plot the violins for the 4 groups
-plot_gene_set_scores(seurat_obj = gex_B_ART, 
+fig_panel <- plot_gene_set_scores(seurat_obj = gex_B_ART, 
                      annotation_column = "annotated_clusters_B", 
                      cell_subset = "Resting Memory",
-                     gene_lists_focus = list("activation" = b_cell_activation_genes, "migration" = migration_genes, "chemokines" = chemokine_genes),
-                     gene_lists_bg = list("activation" = b_cell_activation_genes, "migration" = migration_genes, "chemokines" = chemokine_genes),
+                     gene_lists_focus = list("B cell Activation" = b_cell_activation_genes, "B Cell Migration and Adhesion" = migration_genes, "Chemokine Signaling" = chemokine_genes),
+                     gene_lists_bg = list("B cell Activation" = b_cell_activation_genes, "B Cell Migration and Adhesion" = migration_genes, "Chemokine Signaling" = chemokine_genes),
                      bg_origin = "MBC - CSF PWH vs PWoH", 
                      tissue = c("CSF", "PBMC"), 
-                     calc_signif = TRUE, nrow = 3, 
-                     title_wrap_width = 20) &
+                     calc_signif = TRUE, nrow = 2, 
+                     title_wrap_width = 30) &
   scale_fill_manual(values = c("control_CSF" = "#c7e9c0", "PWH_CSF" = "#bcbddc", "control_PBMC" = "#006d2c", "PWH_PBMC" = "#6a51a3"), 
                     labels = c("control_CSF" = "CSF PWoH", "PWH_CSF" = "CSF PWH", "control_PBMC" = "Blood PWoH", "PWH_PBMC" = "Blood PWH")) &
   scale_y_continuous(expand = expansion(mult = c(0.1, 0.1))) &
-  labs(title = "B Cell Activation Score", 
-       subtitle = "Set of 9 genes",
-       fill = "Tissue & HIV status") &
+  labs(title = NULL, subtitle = NULL, fill = "Tissue & HIV status") &
   plot_annotation("") &
   theme_bw &
-  theme(plot.title = element_text(size = 12, hjust = 0.5, face = "bold"), 
+  theme(plot.title = element_text(size = 10, hjust = 0.5, face = "bold"), 
         plot.subtitle = element_text(hjust = 0.5), 
+        axis.text.y = element_text(size = 12),
         axis.text.x = element_blank(),
         axis.ticks.x = element_blank(),
         panel.grid = element_blank(), 
         panel.grid.major.y = element_blank())
+
+current_size <- dev.size("in")
+ggsave("plots/fig3D.png", 
+       plot = fig_panel, 
+       width = current_size[1], 
+       height = current_size[2], 
+       units = "in",
+       dpi = 1200) 
 ```
 
 
@@ -577,8 +686,6 @@ atac_seurat <- CreateSeuratObject(counts = count_matrix,
 
 atac_seurat@reductions[['umap']] <- CreateDimReducObject(embeddings = as.matrix(proj_atac@embeddings$UMAP_peak$df), key = "UMAP_", global = T, assay = "Peak")
 
-
-load("/banach2/chang/CSF_HIV_Shelli/DC_multiome_paper/ATAC/ArchR_combined/cp_col1.RData")
 add_umap_axes <- function(plot, 
                           axis_start = c(0, 0), 
                           axis_length = 0.1,
@@ -642,9 +749,7 @@ DimPlot(atac_seurat,reduction = "umap",group.by = "finer_myeloid_celltype",
 
 p <- add_umap_axes(p)
 
-png(filename = "/banach2/chang/CSF_HIV_Shelli/DC_multiome_paper/plots/CSF+PBMC_UMAP_Peak.png", width = 7, height = 7, units = "in", res = 300)
 p+NoLegend()
-dev.off()
 ```
 
 
@@ -676,57 +781,427 @@ p <- plotMarkerHeatmap(
   plotLog2FC = TRUE)
 
 p <- ComplexHeatmap::draw(p, heatmap_legend_side = "bot", annotation_legend_side = "bot")
-png(filename = "/banach2/chang/CSF_HIV_Shelli/DC_multiome_paper/plots/ATAC_CSF_celltype_heatmap_zscore_Paris.png", width = 12, height = 8, units = "in", res = 600)
 ComplexHeatmap::draw(p, heatmap_legend_side = "bot", annotation_legend_side = "bot")
-dev.off()
 ```
 
 ### Panel C
 
 ```{r}
-library(readxl)
-Genes_Bcells_ATAC_explore <- read_excel("/banach2/chang/CSF_HIV_Shelli/DC_multiome_paper/ATAC/Genes_Bcells_ATAC_explore.xlsx")
+ggplot(motif_df, aes(x = MeanDiff, y = -log10(FDR))) +
+  geom_point(aes(color = FDR < 0.1), alpha = 0.6, size = 2) +
+  scale_color_manual(values = c("grey50", "red"), name = "FDR < 0.1") +
+  geom_hline(yintercept = -log10(0.1), linetype = "dashed", color = "blue", alpha = 0.5) +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "grey50") +
+  geom_text_repel(
+    data = motif_df %>% filter(FDR < 0.1),
+    aes(label = TF),
+    size = 3, max.overlaps = 30
+  ) +
+  labs(
+    x = "MeanDiff (PWH - Control)",
+    y = "-log10(FDR)",
+    title = "Differential TF Motif Accessibility in CSF Resting Memory B cells",
+    subtitle = ""
+  ) +
+  theme_bw() +
+  theme(
+    plot.title = element_text(size = 14, face = "bold"),
+    legend.position = "bottom"
+  )
+```
 
-proj_atac_celltype$HIV_status[which(proj_atac_celltype$HIV_status == "control")] <- "PWoH"
-proj_atac_celltype$new_sample <- proj_atac_celltype$Sample
-proj_atac_celltype$new_sample[which(proj_atac_celltype$new_sample == "CF1125011724")] <- "PWH-1"
-proj_atac_celltype$new_sample[which(proj_atac_celltype$new_sample == "CF1126103123")] <- "PWH-2"
-proj_atac_celltype$new_sample[which(proj_atac_celltype$new_sample == "CF1129120523")] <-"PWH-3" 
-proj_atac_celltype$new_sample[which(proj_atac_celltype$new_sample == "CF1135090424")] <- "PWH-4"  
-proj_atac_celltype$new_sample[which(proj_atac_celltype$new_sample == "CF1140100924")] <- "PWH-5"  
-proj_atac_celltype$new_sample[which(proj_atac_celltype$new_sample == "CF3028051524")] <-"PWoH-1"
-proj_atac_celltype$new_sample[which(proj_atac_celltype$new_sample == "CF3064111423")] <- "PWoH-2"
-proj_atac_celltype$new_sample[which(proj_atac_celltype$new_sample == "CF3068010924")] <-  "PWoH-3"
-proj_atac_celltype$new_sample[which(proj_atac_celltype$new_sample == "CF3069011024")] <-  "PWoH-4"
-proj_atac_celltype$new_sample[which(proj_atac_celltype$new_sample == "CF3080091124")] <-  "PWoH-5"
+### Panel D
 
-col <- list("PWH"="#9e9ac8","PWoH" = "#41ab5d")
+```{r}
+plot_data <- enrichment_results %>%
+  mutate(
+    significant = padj < 0.1,
+    TF_label = paste0(TF, " (", n_diff_targeted, ")")
+  )
 
-p <- plotBrowserTrack(
-  ArchRProj = proj_atac_celltype, 
-  groupBy = "HIV_status", 
-  geneSymbol = c("HLA-DQA1"),
-  upstream = 20000,
-  downstream = 20000,
-  title = "",
-  minCells = 3,
-  pal = c("#9e9ac8","#41ab5d"),
-  loops = a,
-  facetbaseSize=10
-)
+p <- ggplot(plot_data, aes(x = reorder(TF, -log10(padj)), y = -log10(padj))) +
+  geom_col(aes(fill = fold_enrichment), width = 0.7) +
+  geom_hline(yintercept = -log10(0.1), linetype = "dashed", color = "red", linewidth = 0.8) +
+  scale_fill_gradient(low = "grey70", high = "darkred", name = "Fold\nEnrichment") +
+  coord_flip() +
+  labs(
+    x = "Transcription Factor",
+    y = "-log10(p_adj)",
+    title = "TF Target Enrichment Among Differential Genes",
+    subtitle = "Red line = p_adj < 0.1"
+  ) +
+  theme_bw() +
+  theme(
+    axis.text.y = element_text(size = 10),
+    plot.title = element_text(face = "bold")
+  )
 
-output_file <- "/banach2/chang/CSF_HIV_Shelli/DC_multiome_paper/plots/Bcell_ATAC_coverage_plot_HIV_status.pdf"
-pdf(file = output_file, width = 10, height = 8) 
-for (i in 1:length(p)) {
-  grid::grid.newpage()
-  grid::grid.draw(p[[i]])
-}
+png(filename = "./Bcell_TF_target_enrichment_barplot.png", width = 6, height = 6, units = "in", res = 600)
+p
 dev.off()
 ```
 
+### Panel E
+
+```{r}
+# Merge enrichment results with motif differential results
+plot_data2 <- enrichment_results %>%
+  left_join(motif_df %>% select(name, MeanDiff, FDR), 
+            by = c("motif" = "name")) %>%
+  mutate(significant = padj < 0.1)
+
+p <- ggplot(plot_data2, aes(x = MeanDiff, y = -log10(padj))) +
+  geom_point(aes(size = n_diff_targeted, color = fold_enrichment), alpha = 0.8) +
+  geom_text_repel(
+    data = plot_data2 %>% filter(padj < 0.1),
+    aes(label = TF),
+    size = 3.5, max.overlaps = 20
+  ) +
+  geom_hline(yintercept = -log10(0.1), linetype = "dashed", color = "red") +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "grey50") +
+  scale_color_gradient(low = "blue", high = "red", name = "Fold\nEnrichment") +
+  scale_size_continuous(name = "# Diff genes\ntargeted", range = c(3, 12)) +
+  labs(
+    x = "Motif Accessibility Change (PWH - Control)",
+    y = "-log10(Enrichment p_adj)",
+    title = "TF Regulatory Activity in CSF B cells",
+    subtitle = "X-axis: chromatin accessibility | Y-axis: target gene enrichment"
+  ) +
+  theme_bw()
+
+png(filename = "./Bcell_TF_target_enrichment_dotplot.png", width = 6, height = 6, units = "in", res = 600)
+p
+dev.off()
+```
+
+### Panel F
+
+```{r}
+# Build edge list from significant TFs
+sig_enriched <- enrichment_results %>% filter(padj < 0.1)
+
+edges <- lapply(1:nrow(sig_enriched), function(i) {
+  tf <- sig_enriched$TF[i]
+  motif <- sig_enriched$motif[i]
+  overlap <- intersect(motif_targets_list[[motif]]$targets, diff_genes)
+  
+  if (length(overlap) > 0) {
+    data.frame(from = tf, to = overlap)
+  } else NULL
+}) %>% bind_rows()
+
+# Create network
+library(igraph)
+
+g <- graph_from_data_frame(edges, directed = TRUE)
+
+# Node attributes
+V(g)$type <- ifelse(V(g)$name %in% sig_enriched$TF, "TF", "Target")
+V(g)$is_hla <- grepl("^HLA", V(g)$name)
+
+V(g)$color <- case_when(
+  #V(g)$is_hla ~ "#66C2A5",
+  V(g)$type == "TF" ~ "#FC8D62",
+  TRUE ~ "#8DA0CB"
+)
+
+V(g)$frame.color <- case_when(
+  #V(g)$is_hla ~ "#1B9E77",
+  V(g)$type == "TF" ~ "#D95F02",
+  TRUE ~ "#7570B3"
+)
+
+# Size and labels
+V(g)$size <- ifelse(V(g)$type == "TF", 12, 6)
+V(g)$label.cex <- ifelse(V(g)$type == "TF", 0.8, 0.65)
+V(g)$label.color <- "grey20"
+V(g)$label.dist <- ifelse(V(g)$type == "TF", 0, 0)
+
+# Edge attributes
+E(g)$color <- adjustcolor("grey50", alpha.f = 0.5)
+E(g)$width <- 0.8
+
+set.seed(42)
+layout <- layout_with_fr(g, niter = 1000)
+
+
+png(filename = "./Bcell_differential_motif_network.png", width = 6, height = 6, units = "in", res = 600)
+```
 
 
 ## Fig 5
+
+### Panel A
+
+```{r}
+comparison_results <- df_csf_meta %>%
+  group_by(Analyte) %>%
+  # Run Shapiro test pour test for normality
+  summarise(
+    shapiro_p = if(n_distinct(protein_level) > 1 & n() >= 3) {
+                  shapiro.test(protein_level)$p.value 
+                } else { 
+                  NA_real_ 
+                },
+  # Many proteins do not have a normal distribution. Therfore, a non-parametric test is more appropriate
+  # Run Wilcoxon Test
+  p_val = wilcox.test(protein_level ~ HIV_status)$p.value) %>%
+  # Correct for Multiple Comparisons (BH / FDR)
+  mutate(p_adj = p.adjust(p_val, method = "BH"))
+
+# show significant results
+prot_signif <- comparison_results %>% dplyr::filter(p_val < 0.05) %>% pull(Analyte)
+
+# set cytokine labels
+cytokine_labels <- c(
+  "BAFF"       = "BAFF",
+  "FLT-3L"     = "FLT-3L",
+  "Granzyme A" = "Granzyme A",
+  "IP-10"      = "IP-10/CXCL10",
+  "I-309"      = "I-309/CCL1",
+  "I-TAC"      = "I-TAC/CXCL11",
+  "IL-18"      = "IL-18",
+  "IL-7"       = "IL-7",
+  "MCP-2"      = "MCP-2/CCL8",
+  "Perforin"   = "Perforin",
+  "TARC"       = "TARC/CCL17",
+  "TNFα"       = "TNFα",
+  "TRAIL"      = "TRAIL/TNFSF10",
+  "sCD137"     = "sCD137",
+  "sFasL"      = "sFasL"
+)
+
+# Create the plot
+fig_panel <- ggplot(df_csf_meta %>% dplyr::filter(Analyte %in% prot_signif), aes(x = HIV_status, y = protein_level)) +
+  geom_boxplot(aes(fill = HIV_status), outlier.shape = NA, alpha = 0.7) +
+  geom_jitter(width = 0.2, alpha = 0.4, size = 1) +
+  scale_y_continuous(expand = expansion(mult = c(0.1, 0.2))) +
+  scale_fill_manual(values = col_HIV_status, labels = c("control" = "PWoH", "PWH" = "PWH")) +
+  facet_wrap(~Analyte, scales = "free_y", nrow = 3, labeller = as_labeller(cytokine_labels)) +
+  ggpubr::stat_compare_means(comparisons = list(c("control", "PWH")),
+                             method = "wilcox.test", label = "p.signif", hide.ns = TRUE, size = 6) +
+  theme_minimal() +
+  theme(axis.text.x = element_blank(),
+        axis.ticks.x = element_blank(),
+        axis.ticks.y  = element_line(color = "black"),
+        strip.text = element_text(size = 12, face = "bold"),
+        plot.title = element_text(size = 15, hjust = 0.5),
+        panel.grid = element_blank(),
+        axis.line = element_line(color = "black"),
+        legend.text = element_text(size = 14),
+        legend.title = element_text(size = 14, face = "bold"),
+        #legend.position = "top"
+        ) +
+  labs(y = "Protein Concentration (pg/mL)", x = "", fill = "HIV status")
+
+current_size <- dev.size("in")
+ggsave("plots/fig5A.png", 
+       plot = fig_panel, 
+       width = current_size[1], 
+       height = current_size[2], 
+       units = "in",
+       dpi = 1200) 
+```
+
+### Panel B
+
+```{r}
+# Prepare Wide Matrix (subject_id vs Proteins)
+df_wide <- df_csf_meta %>%
+  dplyr::select(subject_id, Analyte, protein_level) %>%
+  pivot_wider(names_from = Analyte, values_from = protein_level) %>%
+  column_to_rownames("subject_id")
+
+# Subset for proteins with significant expression between PWH and PWoH
+pca_matrix_clean <- df_wide[, prot_signif]
+
+# Run PCA
+pca_res <- prcomp(pca_matrix_clean, center = TRUE, scale. = TRUE)
+
+# Extract PC1 and Merge with Metadata
+metadata_lookup <- df_csf_meta %>% dplyr::select(subject_id, HIV_status) %>% distinct()
+
+df_pca_scored <- data.frame(
+                    subject_id = rownames(pca_res$x), 
+                    prot_score_PC1 = pca_res$x[, "PC1"],
+                    prot_score_PC2 = pca_res$x[, "PC2"]) %>%
+  left_join(metadata_lookup, by = "subject_id") %>%
+  dplyr::select(subject_id, prot_score_PC1, prot_score_PC2, everything())
+
+# Extract variance explained (for axis labels)
+var_explained <- round(100 * (pca_res$sdev^2 / sum(pca_res$sdev^2)), 1)
+
+# plot
+fig_panel <- ggplot(df_pca_scored, aes(x = prot_score_PC1, y = prot_score_PC2, color = HIV_status)) +
+  geom_point(size = 3, alpha = 0.8) + 
+  ggalt::geom_encircle(aes(fill = HIV_status), 
+                alpha = 0.2, 
+                s_shape = 1, 
+                expand = 0.03, 
+                show.legend = FALSE) +
+  scale_fill_manual(values = col_HIV_status_PCA, labels = c("control" = "PWoH", "PWH" = "PWH")) +
+  scale_color_manual(values = col_HIV_status_PCA, labels = c("control" = "PWoH", "PWH" = "PWH")) +
+  labs(
+    title = NULL,
+    x = paste0("PC1 (", var_explained[1], "%)"),
+    y = paste0("PC2 (", var_explained[2], "%)"),
+    color = "HIV Status",
+    fill = "HIV Status") +
+  theme_minimal() +
+  theme(plot.title = element_text(size = 15, hjust = 0.5, face = "bold"),
+          axis.title.x = element_text(size = 13),
+          axis.title.y = element_text(size = 13),
+          axis.text.x = element_text(size = 13),
+          axis.text.y = element_text(size = 13),
+          axis.ticks.x  = element_line(color = "black"),
+          axis.ticks.y  = element_line(color = "black"),
+          strip.text = element_text(size = 12, face = "bold"),
+          panel.grid = element_blank(),
+          axis.line = element_line(color = "black"),
+          legend.position = "top",
+        legend.title = element_text(size = 13),
+        legend.text = element_text(size = 13))
+
+current_size <- dev.size("in")
+ggsave("plots/fig5B.png", 
+       plot = fig_panel, 
+       width = current_size[1], 
+       height = current_size[2], 
+       units = "in",
+       dpi = 1200) 
+```
+
+### Panel C
+
+```{r}
+# Prepare Wide Matrix (subject_id vs Proteins)
+df_wide <- df_csf_meta %>%
+  dplyr::select(subject_id, Analyte, protein_level) %>%
+  pivot_wider(names_from = Analyte, values_from = protein_level) %>%
+  column_to_rownames("subject_id")
+
+# Subset for proteins with significant expression between PWH and PWoH
+pca_matrix_clean <- df_wide
+
+# Run PCA
+pca_res <- prcomp(pca_matrix_clean, center = TRUE, scale. = TRUE)
+
+# Extract PC1 and Merge with Metadata
+metadata_lookup <- df_csf_meta %>% dplyr::select(subject_id, HIV_status) %>% distinct()
+
+df_pca_scored <- data.frame(
+                    subject_id = rownames(pca_res$x), 
+                    prot_score_PC1 = pca_res$x[, "PC1"],
+                    prot_score_PC2 = pca_res$x[, "PC2"]) %>%
+  left_join(metadata_lookup, by = "subject_id") %>%
+  dplyr::select(subject_id, prot_score_PC1, prot_score_PC2, everything())
+
+# clean up
+rm(metadata_lookup)
+
+# plot protein contribution
+fig_panel <- factoextra::fviz_pca_var(pca_res, col.var = "contrib", gradient.cols = c("#00AFBB", "#E7B800", "#FC4E07"),
+             select.var = list(contrib = 20),
+            repel = TRUE,
+            labelsize = 5) +
+    labs(title = NULL) +
+    theme_minimal() +
+    theme(plot.title = element_text(size = 17, hjust = 0.5, face = "bold"),
+          axis.title.x = element_text(size = 15),
+          axis.title.y = element_text(size = 15),
+          axis.text.x = element_text(size = 16),
+          axis.text.y = element_text(size = 16),
+          axis.ticks.x  = element_line(color = "black"),
+          axis.ticks.y  = element_line(color = "black"),
+          strip.text = element_text(size = 12, face = "bold"),
+          panel.grid = element_blank(),
+          axis.line = element_line(color = "black"),
+          legend.text = element_text(size = 12),
+          legend.title = element_text(size = 12))
+
+current_size <- dev.size("in")
+ggsave("plots/fig5C.png", 
+       plot = fig_panel, 
+       width = current_size[1], 
+       height = current_size[2], 
+       units = "in",
+       dpi = 1200) 
+```
+
+### Panel D
+
+```{r}
+# plot correlations between PC protein scores and gene scores / features
+p1 <- ggplot(gene_PC_cor %>% 
+               dplyr::filter(HIV_status == "PWH"),
+         aes(x = prot_score_PC1, y = Mean_Activation)) +
+    geom_point(aes(color = HIV_status), size = 3, alpha = 0.7) +
+    geom_smooth(method = "lm", se = TRUE, color = "black", linetype = "dashed") +
+    ggpubr::stat_cor(method = "spearman", 
+                     label.x.npc = "left", 
+                     label.y.npc = "top", 
+                     size = 5) +
+    scale_color_manual(values = col_HIV_status_PCA, labels = c("control" = "PWoH", "PWH" = "PWH")) +
+    labs(title = NULL,
+         x = "HIV-related CSF Proteomic Score",
+         y = "Mean B Cell Activation Gene Score",
+         color = "HIV status") +
+    theme_minimal() +
+    theme(plot.title = element_text(size = 16, hjust = 0.5, face = "bold"),
+          axis.title.x = element_text(size = 15),
+          axis.title.y = element_text(size = 15),
+          axis.text.x = element_text(size = 14),
+          axis.text.y = element_text(size = 14),
+          axis.ticks.x  = element_line(color = "black"),
+          axis.ticks.y  = element_line(color = "black"),
+          strip.text = element_text(size = 12, face = "bold"),
+          panel.grid = element_blank(),
+          axis.line = element_line(color = "black"), 
+          legend.text = element_text(size = 11), 
+          legend.title = element_text(size = 12),
+          legend.position = "none")
+
+p2 <- ggplot(gene_PC_cor %>% 
+               dplyr::filter(HIV_status == "control"),
+         aes(x = prot_score_PC1, y = Mean_Activation)) +
+    geom_point(aes(color = HIV_status), size = 3, alpha = 0.7) +
+    geom_smooth(method = "lm", se = TRUE, color = "black", linetype = "dashed") +
+    ggpubr::stat_cor(method = "spearman", 
+                     label.x.npc = "left", 
+                     label.y.npc = "top", 
+                     size = 5) +
+    scale_color_manual(values = col_HIV_status_PCA, labels = c("control" = "PWoH", "PWH" = "PWH")) +
+    labs(title = NULL,
+         x = "HIV-related CSF Proteomic Score",,
+         y = "Mean B Cell Activation Gene Score",
+         color = "HIV status") +
+    theme_minimal() +
+    theme(plot.title = element_text(size = 16, hjust = 0.5, face = "bold"),
+          axis.title.x = element_text(size = 15),
+          axis.title.y = element_text(size = 15),
+          axis.text.x = element_text(size = 14),
+          axis.text.y = element_text(size = 14),
+          axis.ticks.x  = element_line(color = "black"),
+          axis.ticks.y  = element_line(color = "black"),
+          strip.text = element_text(size = 12, face = "bold"),
+          panel.grid = element_blank(),
+          axis.line = element_line(color = "black"), 
+          legend.text = element_text(size = 11), 
+          legend.title = element_text(size = 12),
+          legend.position = "none")
+
+fig_panel <- p1 + p2 + plot_layout(guides = "collect", axis_titles = "collect_y")
+
+current_size <- dev.size("in")
+ggsave("plots/fig5D.png", 
+       plot = fig_panel, 
+       width = current_size[1], 
+       height = current_size[2], 
+       units = "in",
+       dpi = 1200) 
+```
+
+## Fig 6
 
 ### Panel A
 
@@ -759,7 +1234,7 @@ wilcox_results <- df_isot %>%
   do(tidy(wilcox.test(fraction_iso ~ tissue, data = .))) %>%
   ungroup() %>%
   select(isotype, p.value) %>%
-  rename(p_value = p.value) %>%
+  dplyr::rename(p_value = p.value) %>%
   mutate(p_adj = p.adjust(p_value, method = "BH"))
 
 # Combine the summary statistics for each tissue into one table (wide format) and merge the Wilcoxon test results.
@@ -777,20 +1252,30 @@ iso_summary_long <- iso_summary %>%
   mutate(tissue = if_else(tissue == "mean_fraction_PBMC", "PBMC", "CSF"))
 
 # Create the facetted pie chart with percentage labels on each slice
-ggplot(iso_summary_long, aes(x = "", y = mean_fraction, fill = isotype)) +
+fig_panel <- ggplot(iso_summary_long, aes(x = "", y = mean_fraction, fill = isotype)) +
   geom_bar(stat = "identity", width = 1) +
   coord_polar(theta = "y") +
   facet_wrap(~ tissue, labeller = labeller(tissue = c(PBMC = "Blood"))) +
   scale_fill_manual(values = col_isotype) +
-  labs(title = "Isotype Frequencies\n", fill = "Isotype") +
+  labs(title = NULL, fill = "Isotype") +
   theme_void() +
   # Add percentage labels on each slice
   geom_text(aes(label = ifelse(mean_fraction > 3, paste0(round(mean_fraction, 1), "%"),"")),
             position = position_stack(vjust = 0.5),
             color = "black", size = 4) + 
   theme(plot.title = element_text(size = 16, hjust = 0.5, face = "bold"), 
+        legend.text = element_text(size = 11),
+        legend.title = element_text(size = 11),
         strip.text = element_text(face = "bold", size = 14),
         legend.position = "top")
+
+current_size <- dev.size("in")
+ggsave("plots/fig6A.png", 
+       plot = fig_panel, 
+       width = current_size[1], 
+       height = current_size[2], 
+       units = "in",
+       dpi = 1200) 
 ```
 
 ### Panel B
@@ -806,11 +1291,6 @@ gex_B_ART@meta.data <- gex_B_ART@meta.data %>% mutate(isotype_group = case_when(
   TRUE ~ NA
 ))
 
-# All isotypes
-UMAPPlot(gex_B_ART, raster = FALSE, group.by = "isotype_group", pt.size = 0.3) + 
-    scale_color_manual(values = col_isotype_group) +
-    labs(title = "B Cell Isotypes") + clean_umap
-
 # IgD
 cells.highlight <- Cells(gex_B_ART)[which(gex_B_ART$isotype_group == "IgD")]
 
@@ -818,7 +1298,7 @@ p2A <- UMAPPlot(gex_B_ART, raster = FALSE, group.by = "annotated_clusters_B", pt
          label = FALSE, label.box = TRUE, repel = TRUE, cells.highlight = cells.highlight) +
     scale_color_manual(values = c("Unselected" = "grey", "Group_1" = "red")) +
     scale_fill_manual(values = rep("#FFFFFF", length(gex_B_ART$annotated_clusters_B))) +
-    labs(title = "IgD", subtitle = paste("Count:", length(cells.highlight))) +
+    labs(title = "IgD", subtitle = NULL) +
     theme(plot.subtitle = element_text(size = 14, hjust = 0.5)) +
     NoLegend() + clean_umap
 
@@ -829,7 +1309,7 @@ p2B <- UMAPPlot(gex_B_ART, raster = FALSE, group.by = "annotated_clusters_B", pt
          label = FALSE, label.box = TRUE, repel = TRUE, cells.highlight = cells.highlight) +
     scale_color_manual(values = c("Unselected" = "grey", "Group_1" = "#fe9929")) +
     scale_fill_manual(values = rep("#FFFFFF", length(gex_B_ART$annotated_clusters_B))) +
-    labs(title = "IgM", subtitle = paste("Count:", length(cells.highlight))) +
+    labs(title = "IgM", subtitle = NULL) +
     theme(plot.subtitle = element_text(size = 14, hjust = 0.5)) +
     NoLegend() + clean_umap
 
@@ -840,7 +1320,7 @@ p2C <- UMAPPlot(gex_B_ART, raster = FALSE, group.by = "annotated_clusters_B", pt
          label = FALSE, label.box = TRUE, repel = TRUE, cells.highlight = cells.highlight) +
     scale_color_manual(values = c("Unselected" = "grey", "Group_1" = "darkblue")) +
     scale_fill_manual(values = rep("#FFFFFF", length(gex_B_ART$annotated_clusters_B))) +
-    labs(title = "IgG", subtitle = paste("Count:", length(cells.highlight))) +
+    labs(title = "IgG", subtitle = NULL) +
     theme(plot.subtitle = element_text(size = 14, hjust = 0.5)) +
     NoLegend() + clean_umap
 
@@ -851,11 +1331,19 @@ p2D <- UMAPPlot(gex_B_ART, raster = FALSE, group.by = "annotated_clusters_B", pt
          label = FALSE, label.box = TRUE, repel = TRUE, cells.highlight = cells.highlight) +
     scale_color_manual(values = c("Unselected" = "grey", "Group_1" = "darkgreen")) +
     scale_fill_manual(values = rep("#FFFFFF", length(gex_B_ART$annotated_clusters_B))) +
-    labs(title = "IgA", subtitle = paste("Count:", length(cells.highlight))) +
+    labs(title = "IgA", subtitle = NULL) +
     theme(plot.subtitle = element_text(size = 14, hjust = 0.5)) +
     NoLegend() + clean_umap
 
-p2 <- (p2A + p2B + p2C + p2D + plot_layout(nrow = 2))
+fig_panel <- (p2A + p2B + p2C + p2D + plot_layout(nrow = 2))
+
+current_size <- dev.size("in")
+ggsave("plots/fig6B.png", 
+       plot = fig_panel, 
+       width = current_size[1], 
+       height = current_size[2], 
+       units = "in",
+       dpi = 1200) 
 ```
 
 ### Panel C
@@ -863,8 +1351,8 @@ p2 <- (p2A + p2B + p2C + p2D + plot_layout(nrow = 2))
 ```{r}
 # Summarize your data
 summary_df <- bcr_heavy %>%
+  mutate(subject_id = as.character(subject_id)) %>%
   group_by(clone_id_unique, subject_id, HIV_status, tissue) %>%
-  #filter(tissue == "CSF") %>%
   summarize(
     total_cells    = n_distinct(cell_id_unique),
     expanded_cells = sum(expanded, na.rm = TRUE),
@@ -890,109 +1378,135 @@ summary_long <- summary_df %>%
   )
 
 # Create the plot
-ggplot(summary_long, aes(x = subject_id, y = count, fill = clone_type)) +
-  geom_bar(stat = "identity") +
-  scale_fill_manual(values = c("n_singletons" = "gray", "non_singletons" = "red"),
-                    labels = c("Unexpanded", "Expanded (>1 cell)")) +
-  # Overlay blue points for shared clones with a dummy color mapping to create a legend entry
-  geom_point(data = summary_df, aes(x = subject_id, y = n_shared, color = "N Clonotypes"),
-             inherit.aes = FALSE, size = 2) +
-  # Overlay text labels for the shared clones count
-  geom_text(data = summary_df, aes(x = subject_id, y = n_shared, label = n_shared),
-            inherit.aes = FALSE, vjust = -0.5, color = "darkblue") +
-  # Define a manual color scale so that the blue dot gets a legend label
-  scale_color_manual(name = "Shared Clonotypes\n(CSF-Blood)", 
-                     values = c("N Clonotypes" = "darkblue"),
-                     guide = guide_legend(override.aes = list(shape = 16, size = 2))) +
-  # Annotate percentage of non-singleton clones above each bar
-  geom_text(data = summary_df, aes(x = subject_id, y = n_clones, 
-                                   label = paste0(percent_non_singleton, "%")),
-            inherit.aes = FALSE, vjust = -1, color = "black") +
-  labs(x = "Participant", 
-       y = "Number of Clonotypes", 
-       title = "Expanded Clonotypes by Participant and Tissue",
-       fill = "Clonotype Expansion") +
-  # Increase the blank space above the highest bar
-  scale_y_continuous(expand = expansion(mult = c(0.01, 0.15))) +
-  theme_bw +
-  theme(plot.title = element_text(hjust = 0.5, size = 14, face = "bold"),
-        axis.text.x = element_text(size = 10),
-        axis.text.y = element_text(size = 10),
-        strip.text = element_text(size = 12)) + 
-  facet_grid(tissue ~ HIV_status, scales = "free", 
-             labeller = labeller(HIV_status = c(control = "PWoH"), tissue = c(PBMC = "Blood")))
+fig_panel <- ggplot(summary_df, aes(x = subject_id)) +
+  geom_segment(aes(x = subject_id, xend = subject_id, y = 1, yend = n_clones), color = "grey80") +
+  geom_point(aes(y = n_clones, color = "Total Clonotypes"), size = 4) +
+  geom_point(aes(y = non_singletons, color = "Expanded (>1 cell)"), size = 3) +
+  geom_text(aes(y = non_singletons, label = paste0(percent_non_singleton, "%")), 
+            vjust = -1, size = 3, fontface = "bold") +
+  scale_y_log10() +
+  scale_color_manual(values = c("Total Clonotypes" = "black", "Expanded (>1 cell)" = "red")) +
+  facet_grid(tissue ~ HIV_status, scales = "free", space = "free_x",
+             labeller = labeller(HIV_status = c(control = "PWoH"), tissue = c(PBMC = "Blood"))) +
+  labs(y = "Number of Clonotypes (Log10 Scale)", 
+       x = "Participant",
+       title = NULL,
+       color = "Clonotype Expansion:") +
+  theme_bw() +
+  theme(legend.position = "top",
+        plot.title = element_text(hjust = 0.5, size = 14, face = "bold"),
+        axis.text.x = element_text(size = 11),
+        axis.text.y = element_text(size = 11),
+        strip.text = element_text(size = 12),
+        legend.text = element_text(size = 12),
+        legend.title = element_text(size = 12))
+
+current_size <- dev.size("in")
+ggsave("plots/fig6C.png", 
+       plot = fig_panel, 
+       width = current_size[1], 
+       height = current_size[2], 
+       units = "in",
+       dpi = 1200)
 ```
 
 ### Panel D
 
 ```{r}
 # Summarize: count cells per clone per subject and assign categories
-pie_data <- bcr_heavy %>%
+exp_clones_data <- bcr_heavy %>%
   filter(tissue == "CSF") %>%
   group_by(subject_id, clone_id_unique) %>%
   summarize(n_cells = n_distinct(cell_id_unique), .groups = "drop") %>%
-  # Create a new grouping variable: "Singletons" if only one cell, otherwise keep the clone ID
   mutate(category = if_else(n_cells == 1, "Singletons", clone_id_unique)) %>%
   group_by(subject_id, category) %>%
   summarize(total_cells = sum(n_cells), .groups = "drop") %>%
   group_by(subject_id) %>%
-  # Calculate the percentage each category represents out of all cells in the subject
   mutate(percentage = total_cells / sum(total_cells) * 100) %>%
   ungroup()
 
 # Remove subjects that only have singletons
-valid_subjects <- pie_data %>%
+valid_subjects <- exp_clones_data %>%
   group_by(subject_id) %>%
   summarize(has_non_singleton = any(category != "Singletons")) %>%
   filter(has_non_singleton) %>%
   pull(subject_id)
 
-pie_data <- pie_data %>%
-  filter(subject_id %in% valid_subjects)
+exp_clones_data <- exp_clones_data %>%
+  dplyr::filter(subject_id %in% valid_subjects) %>%
+  mutate(HIV_status = case_when(
+    subject_id %in% c("C2", "C3", "C6") ~ "PWoH",
+    subject_id %in% c("P4") ~ "PWH",
+    TRUE ~ NA)) %>%
+  mutate(HIV_status = factor(HIV_status, levels = c("PWoH", "PWH")))
 
-# Check the summarized data after filtering
-print(pie_data)
+# Prepare color palette 
+unique_categories <- unique(exp_clones_data$category)
+expanded_clones <- setdiff(unique_categories, "Singletons")
 
-# Create the pie charts with facet_wrap (scales = "free")
-ggplot(pie_data, aes(x = "", y = total_cells, fill = category)) +
-  geom_bar(width = 1, stat = "identity") +
-  coord_polar(theta = "y") +
-  facet_wrap(~ subject_id, scales = "free") +
-  labs(fill = "Clonotype ID", 
-       title = "Distribution of Expanded Clonotypes in the CSF\n",
-       x = NULL, y = NULL) +
-  scale_fill_brewer(palette = "Set3") +
-  theme_void() +
-  theme(strip.text = element_text(face = "bold", size = 12),
-        plot.title = element_text(size = 14, hjust = 0.5,face = "bold")) +
-  # Add labels for each slice: absolute number and percentage
-  geom_text(aes(label = paste0(total_cells, " (", round(percentage, 1), "%)")),
-            position = position_stack(vjust = 0.5))
+# Create a named vector for colors
+clone_colors <- setNames(
+  c("gray90", colorRampPalette(RColorBrewer::brewer.pal(12, "Paired"))(length(expanded_clones))),
+  c("Singletons", expanded_clones)
+)
+
+# Create Stacked Abundance Plot
+fig_panel <- ggplot(exp_clones_data, aes(x = subject_id, y = percentage, fill = category)) +
+  # Using geom_col to create the stacked bars
+  geom_col(color = "white", width = 0.8) +
+  
+  # 2. ADD THIS: Labels inside each segment
+  geom_text(aes(label = total_cells), 
+            position = position_stack(vjust = 0.5), 
+            size = 3, 
+            color = "black") + # Adjust color to white if segments are very dark
+  scale_fill_manual(values = clone_colors) +
+  facet_grid(~HIV_status, scales = "free_x", space = "free_x") +
+  scale_y_continuous(labels = scales::percent_format(scale = 1), expand = expansion(mult = c(0, 0.03))) + 
+  labs(
+    title = NULL,
+    y = "Percentage of BCR Repertoire",
+    x = "Participant",
+    fill = "Clonotype ID") +
+  theme_bw() +
+  theme(
+    plot.title = element_text(hjust = 0.5, size = 14, face = "bold"),
+    axis.title = element_text(size = 13),
+    axis.text.x = element_text(size = 11),
+    axis.text.y = element_text(size = 11),
+    strip.text = element_text(size = 12),
+    panel.grid.major.x = element_blank(),
+    legend.text = element_text(size = 12),
+    legend.title = element_text(size = 12)
+  )
+
+current_size <- dev.size("in")
+ggsave("plots/fig6D.png", 
+       plot = fig_panel, 
+       width = current_size[1], 
+       height = current_size[2], 
+       units = "in",
+       dpi = 1200)
 ```
 
 ### Panel E
 
 ```{r}
-# group isotypes for visualization
-gex_B_ART@meta.data <- gex_B_ART@meta.data %>% mutate(isotype_group = case_when(
-  isotype %in% c("IGHG1", "IGHG2", "IGHG3", "IGHG4") ~ "IgG", 
-  isotype %in% c("IGHA1", "IGHA2") ~ "IgA", 
-  isotype == "IGHM" ~ "IgM",
-  isotype == "IGHD" ~ "IgD", 
-  isotype == "IGHE" ~ "IgE",
-  TRUE ~ isotype
-))
-
 # mu_freq over all cells
-p1 <- plot_mu_freq(gex_B_ART, "") + labs(title = "SHM Frequency Across \nB cell Subtypes", subtitle = "") + clean_umap
+fig_panel <- plot_mu_freq(gex_B_ART, "", plot_label = FALSE) + 
+  labs(title = NULL, subtitle = NULL) + 
+  theme(axis.title = element_text(size = 12),
+        legend.title = element_text(size = 10),
+        legend.text = element_text(size = 10)) +
+  clean_umap
 
-# mu_freq per isotype
-p2 <- plot_mu_freq_isotype_overlay(seurat_obj = gex_B_ART, isotypes = "IgD", tissue_type = "") + labs(title = "IgD", subtitle = "") + clean_umap
-p3 <- plot_mu_freq_isotype_overlay(seurat_obj = gex_B_ART, isotypes = "IgM", tissue_type = "") + labs(title = "IgM", subtitle = "") + clean_umap
-p4 <- plot_mu_freq_isotype_overlay(seurat_obj = gex_B_ART, isotypes = "IgG", tissue_type = "") + labs(title = "IgG", subtitle = "") + clean_umap
-p5 <- plot_mu_freq_isotype_overlay(seurat_obj = gex_B_ART, isotypes = "IgA", tissue_type = "") + labs(title = "IgA", subtitle = "") + clean_umap
-
-(p1 | ((p2 | p3) / (p4 | p5)) + plot_layout(guides = "collect"))
+current_size <- dev.size("in")
+ggsave("plots/fig6E.png", 
+       plot = fig_panel, 
+       width = current_size[1], 
+       height = current_size[2], 
+       units = "in",
+       dpi = 1200)
 ```
 
 ### Panel F
@@ -1001,11 +1515,11 @@ p5 <- plot_mu_freq_isotype_overlay(seurat_obj = gex_B_ART, isotypes = "IgA", tis
 # mutation frequency by tissue
 data_mu_freq_clust_iso_PWH_ctrl <- bcr_heavy %>% dplyr::filter(isotype_group != "IgE") %>%
                                     dplyr::filter(gex_annotation_final %in% c("MBC class-switched", "MBC class-unswitched")) %>%
-                                    group_by(subject_id, HIV_status, tissue, gex_annotation_final, isotype_group) %>%
+                                    group_by(subject_id, HIV_status, tissue, isotype_group) %>%
                                     dplyr::summarize(median_mu_freq = median(mu_freq), .groups = "drop")
 
 # plot blood subtypes
-p1 <- ggplot(dplyr::filter(data_mu_freq_clust_iso_PWH_ctrl), aes(y = median_mu_freq, x = isotype_group, fill = HIV_status)) +
+p1 <- ggplot(data_mu_freq_clust_iso_PWH_ctrl, aes(y = median_mu_freq, x = isotype_group, fill = HIV_status)) +
   geom_boxplot(position = position_dodge(width = 1)) +
   geom_jitter(position = position_dodge(width = 1), alpha = 0.3) +
   scale_fill_manual(values = col_HIV_status) +
@@ -1013,8 +1527,8 @@ p1 <- ggplot(dplyr::filter(data_mu_freq_clust_iso_PWH_ctrl), aes(y = median_mu_f
                      breaks = c(0.02, 0.04, 0.06, 0.08),
                      expand = expansion(mult = c(0.1, 0.15))) +
   scale_fill_manual(values = col_HIV_status, labels = c("control" = "PWoH", "PWH" = "PWH")) +
-  ggpubr::stat_compare_means(aes(group = HIV_status), method = "wilcox.test", label = "p.signif", hide.ns = TRUE, size = 10, vjust = 0) +
-  labs(y = "Median Mutation frequency", x = "Isotype") +
+  ggpubr::stat_compare_means(aes(group = HIV_status), method = "wilcox.test", label = "p.signif", hide.ns = TRUE, size = 8, vjust = 0) +
+  labs(y = "Median Mutation frequency", x = NULL, fill = "HIV status") +
   theme_bw +
   theme(plot.title = element_text(size = 15, hjust = 0.5), 
         axis.title.x = element_text(size = 14),
@@ -1025,7 +1539,9 @@ p1 <- ggplot(dplyr::filter(data_mu_freq_clust_iso_PWH_ctrl), aes(y = median_mu_f
         panel.grid.major.x = element_blank(),
         panel.grid.major.y = element_blank(),
         plot.margin = unit(c(0.5, 0.5, 0.5, 0.5), "cm"), 
-        legend.position = "top") +
+        legend.position = "top",
+        legend.title = element_text(size = 12),
+        legend.text = element_text(size = 12)) +
   facet_wrap(~ tissue, scales = "free", labeller = labeller(tissue = c(PBMC = "Blood")))
 
 
@@ -1041,10 +1557,10 @@ data_mu_freq_clust_iso_PWH_ctrl <- bcr_heavy %>%
 p2 <- ggplot(dplyr::filter(data_mu_freq_clust_iso_PWH_ctrl, !is.na(isotype_group)), aes(y = delta_median_mu_freq, x = isotype_group, fill = HIV_status)) +
   geom_boxplot(position = position_dodge(width = 1)) +
   geom_jitter(position = position_dodge(width = 1), alpha = 0.3) +
-  ggpubr::stat_compare_means(aes(group = HIV_status), method = "wilcox.test", label = "p.signif", hide.ns = TRUE, size = 10, vjust = 0) +
+  ggpubr::stat_compare_means(aes(group = HIV_status), method = "wilcox.test", label = "p.signif", hide.ns = TRUE, size = 8, vjust = 0) +
   scale_fill_manual(values = col_HIV_status, labels = c("control" = "PWoH", "PWH" = "PWH")) +
   scale_y_continuous(labels = function(x) paste0(scales::percent(x, accuracy = 1)), breaks = seq(-0.06, 0.08, 0.02), expand = expansion(mult = c(0.1, 0.15))) +
-  labs(y = "Difference of Median Mutation Frequency \nbetween tissues (CSF minus Blood)", x = "Isotype") +
+  labs(y = "Difference of Median Mutation Frequency \nbetween tissues (CSF minus Blood)", x = NULL) +
   facet_wrap(~ locus, labeller = labeller(locus = c(IGH = "CSF - Blood"))) +
   theme_bw +
   theme(plot.title = element_text(size = 15, hjust = 0.5), 
@@ -1058,18 +1574,123 @@ p2 <- ggplot(dplyr::filter(data_mu_freq_clust_iso_PWH_ctrl, !is.na(isotype_group
         plot.margin = unit(c(0.5, 0.5, 0.5, 0.5), "cm"), 
         legend.position = "none")
 
-p1 + p2 + plot_layout(axis_titles = "collect", widths = c(2.3, 1)) +
-  plot_annotation(title = "Somatic Hypermutation (SHM) Frequency in MBC") & 
+fig_panel <- p1 + p2 + plot_layout(axis_titles = "collect", widths = c(2.3, 1)) +
+  plot_annotation(title = NULL) & 
   theme(plot.title = element_text(size = 16, hjust = 0.5, face = "bold"),
         plot.subtitle = element_text(size = 12, hjust = 0.5),
         plot.tag = element_text(size = 15, face = "bold"))
+
+current_size <- dev.size("in")
+ggsave("plots/fig6F.png", 
+       plot = fig_panel, 
+       width = current_size[1], 
+       height = current_size[2], 
+       units = "in",
+       dpi = 1200)
+```
+
+### Panel G
+
+```{r}
+# summarize mutation frequency
+data_mu_freq_clust_iso_PWH_ctrl <- bcr_heavy %>% 
+                                    dplyr::filter(gex_annotation_final %in% c("MBC class-switched", "MBC class-unswitched") & isotype_group == "IgG") %>%
+                                    group_by(subject_id, HIV_status, tissue, gex_annotation_final, isotype_group, locus) %>%
+                                    dplyr::summarize(median_mu_freq = median(mu_freq), .groups = "drop") %>%
+                                    group_by(isotype_group, gex_annotation_final, HIV_status, subject_id, locus) %>%
+                                    dplyr::reframe(delta_median_mu_freq = median_mu_freq[tissue == "CSF"] - median_mu_freq[tissue == "PBMC"])
+
+
+wide_tbl <- data_mu_freq_clust_iso_PWH_ctrl %>%
+  select(subject_id, HIV_status, isotype_group, gex_annotation_final, delta_median_mu_freq) %>%
+  pivot_wider(
+    id_cols    = c(subject_id, HIV_status),
+    names_from = c(isotype_group, gex_annotation_final),
+    values_from = delta_median_mu_freq,
+    names_glue = "IgG_MBC",
+    values_fn = mean   # handles any accidental duplicates per subject/column
+  ) %>%
+  arrange(HIV_status, subject_id) %>%
+  mutate(subject_id = as.character(subject_id))
+
+# load cognitive scores
+scores_df <- read.csv("../meta/cognitive_score.csv") %>% dplyr::filter(study == "CSF1")
+scores_df$subject_id <- as.character(scores_df$subject_id)
+scores_df$alt_ID <- as.character(scores_df$alt_ID)
+
+# calculate per subject expression
+per_subj_ct <- wide_tbl %>%
+  inner_join(scores_df, by = c("subject_id" = "subject_id"))
+
+# Pick one gene and one factor_score:
+gene <- "IgG_MBC"
+factor_score <- "FS1"
+
+df <- per_subj_ct %>%
+  dplyr::select(subject_id, HIV_status, age, educ, all_of(gene), all_of(factor_score)) %>%
+  tidyr::drop_na()
+
+colnames(df)[colnames(df) == gene] <- "gene_score"
+colnames(df)[colnames(df) == factor_score] <- "factor_score"
+
+# Fit model: does slope differ by HIV_status?
+model <- lm(factor_score ~ gene_score + age + educ, data = df)
+
+# Extract stats from linear model
+b <- coef(summary(model))["gene_score","Estimate"]
+se <- coef(summary(model))["gene_score","Std. Error"]
+p <- coef(summary(model))["gene_score","Pr(>|t|)"]
+r2 <- summary(model)$adj.r.squared
+p_mod <- pf(summary(model)$fstatistic[1],
+            summary(model)$fstatistic[2],
+            summary(model)$fstatistic[3],
+            lower.tail = FALSE)
+
+# Spearman correlation
+sp <- cor.test(df$gene_score, df$factor_score, method="spearman")
+
+# Create text annotation
+annot_text <- paste0(
+  "Spearman ρ = ", round(sp$estimate,2), ", p = ", signif(sp$p.value,3), "\n",
+  "β = ", round(b,2), " (SE: ", round(se,2), "), p = ", signif(p,3), "\n",
+  "Adj-R² = ", round(r2,2), ", p = ", signif(p_mod,3)
+)
+
+# Plot
+fig_panel <- ggplot(df, aes(x = gene_score, y = factor_score, color = HIV_status)) +
+  geom_point(shape = 19, size = 4.5, stroke = 0.4) +
+  geom_smooth(method = "lm",
+              se = TRUE, color = "black") +
+  annotate("label", x = min(df$gene_score), y = max(df$factor_score),
+           label = annot_text, hjust = 0, vjust = 4, size = 4.5,
+           color = "black", fontface = "plain") +
+  scale_x_continuous(labels = scales::percent_format(accuracy = 1)) +
+  scale_color_manual(values = col_HIV_status_PCA, labels = c("control" = "PWoH", "PWH" = "PWH")) +
+  theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5, face = "bold", size = 14),
+        plot.subtitle = element_text(hjust = 0.5, size = 13),
+        axis.title = element_text(size = 14),
+        axis.text = element_text(size = 14), 
+        legend.text = element_text(size = 15),
+        legend.title = element_text(size = 15),
+        legend.position = "top") +
+  labs(title = NULL, #"Somatic Hypermutation (SHM) and Cognitive Performance",
+       subtitle = NULL, #"Adjusted for age and education",
+       x = "SHM difference between CSF and Blood",
+       y = "Processing Speed & Excecutive Function \n(Factor Score 1)",
+       color = "HIV Status")
+
+current_size <- dev.size("in")
+ggsave("plots/fig6G.png", 
+       plot = fig_panel, 
+       width = current_size[1], 
+       height = current_size[2], 
+       units = "in",
+       dpi = 1200)
 ```
 
 
-
-
-
-## Fig 6
+## Fig 7
 
 ### Panel A
 
@@ -1080,7 +1701,7 @@ p1A <- VlnPlot(gex_choroid_supppresed, features = "nCount_RNA",
   theme(axis.text.x = element_blank(), 
         axis.ticks.x = element_blank(),
         legend.position = "none") +
-  labs(title = "Number of Reads per Cell", x = "Sample")
+  labs(y = "Reads per Cell", x = "Sample", title = NULL)
 
 p1B <- VlnPlot(gex_choroid_supppresed, features = "nFeature_RNA", 
         group.by = "sample_final", pt.size = 0.000) +
@@ -1088,12 +1709,20 @@ p1B <- VlnPlot(gex_choroid_supppresed, features = "nFeature_RNA",
   theme(axis.text.x = element_blank(), 
         axis.ticks.x = element_blank(),
         legend.position = "none") +
-  labs(title = "Number of Genes per Cell", x = "Sample")
+  labs(y = "Genes per Cell", x = "Sample", title = NULL)
 
-wrap_plots(p1A, p1B, nrow = 1)
+fig_panel <- wrap_plots(p1A, p1B, nrow = 1)
+
+current_size <- dev.size("in")
+ggsave("plots/fig7A.png", 
+       plot = fig_panel, 
+       width = current_size[1], 
+       height = current_size[2], 
+       units = "in",
+       dpi = 1200)
 ```
 
-### Panel B & C
+### Panel B
 
 ```{r}
 # set cluster colors
@@ -1111,21 +1740,44 @@ cols_CP_clusters <- c(
   "Erythrocytes" = "#fdd49e")
 
 # plot all CP cells
-p2 <- DimPlot(gex_choroid_supppresed, reduction = "umap.harmony", group.by = "annotated_clusters_comb", 
+fig_panel <- DimPlot(gex_choroid_supppresed, reduction = "umap.harmony", group.by = "annotated_clusters_comb", 
               raster = FALSE, label = FALSE, label.box = TRUE, repel = TRUE, cols = cols_CP_clusters) +
         theme(plot.title = element_text(size = 13, hjust = 0.5, face = "bold"),
               plot.tag = element_text(face = "bold", size = 15)) +
-        labs(title = "All Cells in Choroid Plexus")
+        labs(title = NULL)
 
+
+current_size <- dev.size("in")
+ggsave("plots/fig7B.png", 
+       plot = fig_panel, 
+       width = current_size[1], 
+       height = current_size[2], 
+       units = "in",
+       dpi = 1200)
+```
+
+### Panel C
+
+```{r}
 # plot CP B cells
-p3 <- DimPlot(gex_choroid_B_suppressed, reduction = "umap.harmony", group.by = "annotated_clusters_B", 
-              raster = FALSE, label = TRUE, label.box = TRUE, cols = c("B cells" = "#ef3b2c", "Plasma cells" = "#67000d")) +
-        scale_fill_manual(values = rep("#FFFFFF", length(gex_choroid_B$seurat_clusters))) +
-        labs(title = "B Cells in Choroid Plexus") +
+fig_panel <- DimPlot(gex_choroid_B_suppressed, reduction = "umap.harmony", group.by = "annotated_clusters_B", 
+              raster = FALSE, label = TRUE, label.box = TRUE, label.color = "white",
+              cols = c("B cells" = "#ef3b2c", "Plasma cells" = "#67000d")) +
+        scale_fill_manual(values = c("B cells" = "white", "Plasma cells" = "white")) +
+        labs(title = NULL) +
         theme(plot.title = element_text(size = 13, hjust = 0.5, face = "bold"),
               plot.tag = element_text(face = "bold", size = 15)) +
         NoLegend()
+
+current_size <- dev.size("in")
+ggsave("plots/fig7C.png", 
+       plot = fig_panel, 
+       width = current_size[1], 
+       height = current_size[2], 
+       units = "in",
+       dpi = 1200)
 ```
+
 
 ### Panel D
 
@@ -1141,34 +1793,38 @@ pca_n_features <- 500
 dds_vst <- varianceStabilizingTransformation(object_DESeq2, blind = TRUE)
 
 # plot PCA
-p4 <- plotPCA(dds_vst, intgroup = "group", ntop = pca_n_features) + 
+fig_panel <- plotPCA(dds_vst, intgroup = "group", ntop = pca_n_features) + 
   ggforce::geom_mark_ellipse(aes(fill = group), alpha = 0.2, expand = unit(0.5,"mm"), size = 0.5) +
   coord_cartesian(xlim = c(-52, 60), ylim = c(-35, 20)) + 
   scale_color_manual(values = col_HIV_status_PCA, name = "HIV Status",
                      labels = c("control" = "PWoH", "PWH" = "PWH")) +
   scale_fill_manual(values = col_HIV_status_PCA, name = "HIV Status",
                      labels = c("control" = "PWoH", "HIV_suppressed" = "PWH_suppressed")) +
-  labs(title = paste("PCA of", pca_tissue, pca_cell_type)) +
+  labs(title = NULL) +
   theme_bw +
   theme(plot.title = element_text(size = 13, hjust = 0.5, face = "bold"),
         plot.subtitle = element_text(size = 12, hjust = 0.5),
+        axis.text = element_text(size = 11),
         axis.title.x = element_text(size = 14),
         axis.title.y = element_text(size = 14),
         panel.grid.major.y = element_blank(),
         panel.grid.major.x = element_blank(),
         panel.grid.minor.x = element_blank(),
         panel.grid.minor.y = element_blank(),
+        panel.border = element_rect(colour = "black"),
+        legend.text = element_text(size = 11),
         plot.margin = unit(c(0.5, 0.5, 0.5, 0.5), "cm"),
         #legend.position = "top",
         #legend.justification = "center"
         )
 
-# remove objects
-rm(pca_cell_type, pca_tissue, dds_vst)
-```
-
-```{r}
-p3 + p4
+current_size <- dev.size("in")
+ggsave("plots/fig7D.png", 
+       plot = fig_panel, 
+       width = current_size[1], 
+       height = current_size[2], 
+       units = "in",
+       dpi = 1200)
 ```
 
 ### Panel E
@@ -1216,15 +1872,15 @@ plot_dots_CP <- plot_dots_CP %>%
   mutate(Description = factor(Description, levels = desc_order_CP))
 
 # plot data
-ggplot(plot_dots_CP, aes(x = gene_ratio, y = Description, fill = qvalue)) +
+fig_panel <- ggplot(plot_dots_CP, aes(x = gene_ratio, y = Description, fill = qvalue)) +
   geom_col(color = "black", width = 0.7) +
   scale_fill_continuous(low = "#e31a1c", high = "#810f7c") +
   scale_y_discrete(labels = function(labels) str_wrap(labels, width = 80), position = "right") +
   facet_grid(category ~ cohort, scales = "free", space = "free_y", switch = "y",
              labeller = labeller(category = label_wrap_gen(width = 30))) +
   labs(
-    title    = "Upregulated Pathways in Choroid Plexus B cells of PWH",
-    subtitle = "Gene Set Enrichment Analysis - REACTOME Pathways",
+    title    = NULL,
+    subtitle = NULL,
     x        = "Gene Ratio",
     y        = "",
     fill     = "FDR q-value") +
@@ -1232,31 +1888,45 @@ ggplot(plot_dots_CP, aes(x = gene_ratio, y = Description, fill = qvalue)) +
   theme(
     plot.title         = element_text(size = 14, hjust = 0.5, face = "bold"),
     plot.subtitle      = element_text(size = 11, hjust = 0.5),
-    axis.text.y        = element_text(size = 12, color = "black"),
-    axis.text.x        = element_text(size = 9,  color = "black"),
+    axis.text.y        = element_text(size = 12, color = "black", hjust = 0),
+    axis.text.x        = element_text(size = 11,  color = "black"),
     axis.title.x       = element_text(size = 12),
-    strip.text.x       = element_text(size = 12, color = "darkblue", face = "bold"),
-    strip.text.y       = element_text(size = 12, color = "darkgreen",  face = "bold"),
+    strip.text.x       = element_text(size = 12, color = "black"),
+    strip.text.y       = element_text(size = 12, color = "black"),
     panel.border       = element_rect(color = "black", fill = NA, linewidth = 1),
     panel.grid.major   = element_blank(),
     panel.grid.minor   = element_blank(),
     legend.position    = "left"
   )
+
+current_size <- dev.size("in")
+ggsave("plots/fig7E.png", 
+       plot = fig_panel, 
+       width = current_size[1], 
+       height = current_size[2], 
+       units = "in",
+       dpi = 1200)
 ```
 
+## Fig 8
 
+Figure 8 was generated in Biorender.
 
 # Supplementary Figures
 
 ## Suppl Fig 1
 
+Supplementary Figure 1 was generated manually.
+
+## Suppl Fig 2
+
+### Panel A
+
 ```{r}
 # marker genes per annotated cluster
 p <- DotPlot(gex_ART, cluster.idents = TRUE, group.by = "annotated_clusters_all_ref",
-        features = unique(markers_all$Marker)) %>%
-  add_info_bar(method = "join", info_type = "Cell_Type_Full",
-               info = markers_all %>% dplyr::select(Cell_Type_Full, Marker) %>% dplyr::rename(features.plot = Marker),
-               text_size = 6, label = FALSE) + RotatedAxis() +
+        features = unique(markers_all$Marker)) + 
+  RotatedAxis() +
   scale_colour_gradient2(low = "blue", high = "red") +
   labs(x = "", y = "", title = "Immune Cell Marker Genes in CSF (CSF Group 1)") + 
   theme(strip.text.x = element_text(size = 12),
@@ -1266,11 +1936,11 @@ p <- DotPlot(gex_ART, cluster.idents = TRUE, group.by = "annotated_clusters_all_
 
 # plot side metrics
 plot_dot_side(p, gex_ART, row_identity = "annotated_clusters_all_ref",
-              facet_col = "Cell_Type_Full", info_to_add = c("cluster_size")) +
+              info_to_add = c("cluster_size")) +
   labs(subtitle = "Right side stats: total counts")
 ```
 
-## Suppl Fig 2
+### Panel B
 
 ```{r}
 ggplot(data = calc_pcts(data = gex_ART[[]], meta_group_by = c("subject_id", "HIV_status", "tissue"), focus_group = "annotated_clusters_all_ref"), 
@@ -1298,6 +1968,204 @@ ggplot(data = calc_pcts(data = gex_ART[[]], meta_group_by = c("subject_id", "HIV
 
 ## Suppl Fig 3
 
+### Panel A
+
+```{r}
+# Subset to memory B cells
+sub_obj <- subset(gex_B_ART, annotated_clusters_B == c("Resting Memory", "Atypical Memory"))
+Idents(sub_obj) <- sub_obj$annotated_clusters_B
+
+# Define and scale markers of interest
+markers <- c("CD27", "CR2", "ITGAX", "TBX21", "FCRL5")
+sub_obj <- ScaleData(sub_obj, features = markers)
+
+# Plot heatmap
+DoHeatmap(subset(sub_obj, downsample = 500), 
+          features = markers, 
+          size = 4, angle = 0, vjust = 0.1, hjust = 0.5,
+          group.colors = c("Resting Memory" = "#C77CFF", "Atypical Memory" = "#F8766D"))
+```
+
+### Panel B
+
+```{r}
+# calculate cell frequencies among all cells
+B_annotations <- gex_B_ART@meta.data %>% dplyr::select(cell_id_unique, annotated_clusters_B)
+B_freq_denom_all <- gex_ART@meta.data %>% left_join(B_annotations, by = "cell_id_unique")
+
+# calculate cell frequencies among B cells
+B_freq_B <- calculateCellFrequencies(sc_df = gex_B_ART@meta.data, 
+                         cluster_col = "annotated_clusters_B",
+                         subject_col = "subject_id",
+                         vars_to_keep = c("tissue", "HIV_status"),
+                         show_clusters = NULL, 
+                         denominator_clusters = NULL)
+
+# calculate cell frequencies among all cells
+B_freq_all <- calculateCellFrequencies(sc_df = B_freq_denom_all, 
+                         cluster_col = "annotated_clusters_B", # use "annotated_clusters_gen for combined cell types
+                         subject_col = "subject_id",
+                         vars_to_keep = c("tissue", "HIV_status"),
+                         show_clusters = unique(B_freq_denom_all$annotated_clusters_B[!is.na(B_freq_denom_all$annotated_clusters_B)]), 
+                         denominator_clusters = NULL)
+```
+
+```{r}
+# Compute the median frequency per cluster and tissue for reordering purposes
+cluster_order <- B_freq_all %>% 
+  group_by(cluster, tissue) %>% 
+  summarize(med_freq = median(frequency), .groups = "drop")
+
+# Compute cell counts per cluster, tissue, and HIV_status, and assign y positions.
+label_data <- B_freq_all %>% 
+  group_by(cluster, tissue, HIV_status) %>% 
+  summarize(n_cells = sum(cell_count), .groups = "drop") %>%
+  left_join(cluster_order, by = c("cluster", "tissue")) %>%
+  mutate(y_position = ifelse(HIV_status == "control", -0.012, -0.018))
+
+# plot frequencies for PBMC
+p4A <- ggplot(B_freq_all %>% dplyr::filter(tissue == "PBMC"), 
+              aes(x = tidytext::reorder_within(cluster, -frequency, tissue,FUN = median), y = frequency, fill = HIV_status)) +
+  geom_boxplot(position = position_dodge(width = 0.8), width = 0.7, outlier.shape = NA) +
+  geom_jitter(aes(color = "black"), position = position_dodge(width = 0.8), alpha = 1) +
+  ggpubr::stat_compare_means(aes(group = HIV_status), method = "wilcox.test", label = "p.signif", hide.ns = TRUE) +
+  geom_text(data = label_data %>% dplyr::filter(tissue == "PBMC"), aes(x = tidytext::reorder_within(cluster, -med_freq, tissue, FUN = median), 
+                                   y = y_position, label = paste(n_cells), color = HIV_status, fontface = "bold"),
+            inherit.aes = FALSE, hjust = 0.5, size = 4, check_overlap = TRUE) +
+  scale_fill_manual(values = col_HIV_status, labels = c("PWH" = "PWH", "control" = "PWoH")) +
+  scale_color_manual(values = col_HIV_status_PCA, guide = "none") +
+  scale_y_continuous(labels = scales::label_percent(scale = 100), expand = expansion(mult = c(0.05, 0.1))) +
+  tidytext::scale_x_reordered() +
+  labs(x = NULL,y = "Cell Type Percentage \n(% of Immune cells)", fill = "HIV status") +
+  facet_wrap(~ tissue, scales = "free", ncol = 2, labeller = labeller(tissue = c(PBMC = "Blood"))) +
+  theme_bw +
+  theme(plot.title = element_text(size = 15, hjust = 0.5, face = "bold"), 
+        axis.text.x = element_text(size = 14, hjust = 1, angle = 45),
+        axis.title.y = element_text(size = 15),
+        strip.text = element_text(size = 12),
+        legend.text = element_text(size = 14),
+        legend.title = element_text(size = 14),
+        panel.grid.major.y = element_blank(),
+        panel.grid.minor.y = element_blank(), legend.position = "top")
+```
+
+```{r}
+# Compute the median frequency per cluster and tissue for reordering purposes
+cluster_order <- B_freq_all %>% 
+  group_by(cluster, tissue) %>% 
+  summarize(med_freq = median(frequency), .groups = "drop")
+
+# Compute cell counts per cluster, tissue, and HIV_status, and assign y positions.
+label_data <- B_freq_all %>% 
+  group_by(cluster, tissue, HIV_status) %>% 
+  summarize(n_cells = sum(cell_count), .groups = "drop") %>%
+  left_join(cluster_order, by = c("cluster", "tissue")) %>%
+  mutate(y_position = ifelse(HIV_status == "control", -0.0001, -0.0003))
+
+# plot frequencies for CSF
+p4B <- ggplot(B_freq_all %>% dplyr::filter(tissue == "CSF" & cluster %in% c("Resting Memory", "Naive")), 
+              aes(x = tidytext::reorder_within(cluster, -frequency, tissue,FUN = median), y = frequency, fill = HIV_status)) +
+  geom_boxplot(position = position_dodge(width = 0.8), width = 0.7, outlier.shape = NA) +
+  geom_jitter(aes(color = "black"), position = position_dodge(width = 0.8), alpha = 1) +
+  ggpubr::stat_compare_means(aes(group = HIV_status), method = "wilcox.test", label = "p.signif", hide.ns = TRUE, size = 9) +
+  geom_text(data = label_data %>% dplyr::filter(tissue == "CSF" & cluster %in% c("Resting Memory", "Naive")), 
+            aes(x = tidytext::reorder_within(cluster, -med_freq, tissue, FUN = median), y = y_position, label = paste(n_cells), color = HIV_status, fontface = "bold"),
+            inherit.aes = FALSE, hjust = 0.5, size = 4, check_overlap = TRUE) +
+  scale_fill_manual(values = col_HIV_status, labels = c("PWH" = "PWH", "control" = "PWoH")) +
+  scale_color_manual(values = col_HIV_status_PCA, guide = "none") +
+  scale_y_continuous(labels = scales::label_percent(scale = 100), expand = expansion(mult = c(0.05, 0.1))) +
+  tidytext::scale_x_reordered() +
+  labs(x = NULL, y = "Cell Type Percentage \n(% of Immune cells)", fill = "HIV status") +
+  facet_wrap(~ tissue, scales = "free", ncol = 2, labeller = labeller(tissue = c(PBMC = "Blood"))) +
+  theme_bw +
+  theme(plot.title = element_text(size = 15, hjust = 0.5, face = "bold"), 
+        axis.text.x = element_text(size = 14, hjust = 1, angle = 45),
+        axis.title.y = element_text(size = 15),
+        strip.text = element_text(size = 12),
+        legend.text = element_text(size = 14),
+        legend.title = element_text(size = 14),
+        panel.grid.major.y = element_blank(),
+        panel.grid.minor.y = element_blank())
+```
+
+```{r}
+p4B <- p4B + theme(legend.position = "none")
+
+(p4A + p4B + plot_layout(axis_titles = "collect", widths = c(2, 1))) + 
+  plot_annotation(title = "B Cell Subtype Frequencies Across B Cells",
+                  theme = theme(plot.title = element_text(hjust = 0.5, face = "bold")))
+```
+
+## Suppl Fig 4
+
+```{r}
+# Extract the full results table for "Resting Memory"
+res_volcano <- deseq2_CSF_B_gex$DE$`Resting Memory`
+
+# Apply the Mito/Ribo filtering
+genes_mitochondrial <- grep(pattern = "^MT-", x = res_volcano$gene, value = TRUE) 
+genes_ribosomal <- grep(pattern = "^RP[SL][[:digit:]]|^RPLP[[:digit:]]|^RPSA", x = res_volcano$gene, value = TRUE)
+genes_ribosomal <- grep(pattern = "[BK-]|AP|[[:digit:]](.+)L", x = genes_ribosomal, invert = TRUE, value = TRUE)
+
+res_volcano_filtered <- res_volcano %>%
+  dplyr::filter(!gene %in% c(genes_mitochondrial, genes_ribosomal))
+
+# Sort filtered results by adjusted p-value and take the top 20
+top_genes_to_label <- res_volcano_filtered %>%
+  arrange(p_val_adj) %>%
+  slice_head(n = 20) %>%
+  pull(gene)
+
+# Define thresholds
+fc_cutoff <- 0      
+pval_cutoff <- 0.05   
+
+# Create grouping column
+df_plot <- res_volcano_filtered %>%
+  mutate(diffexpressed = case_when(
+    p_val_adj < pval_cutoff & avg_logFC > fc_cutoff ~ "Upregulated",
+    p_val_adj < pval_cutoff & avg_logFC < -fc_cutoff ~ "Downregulated",
+    TRUE ~ "NS"
+  ))
+
+# Select Labels (Top 20 significant genes)
+top_genes_data <- df_plot %>%
+  filter(gene %in% top_genes_to_label)
+
+# Plot
+ggplot(df_plot, aes(x = avg_logFC, y = -log10(p_val_adj), color = diffexpressed)) +
+  geom_point(alpha = 0.7, size = 2) +
+  geom_vline(xintercept = c(-fc_cutoff, fc_cutoff), linetype = "dashed", color = "black", linewidth = 0.4) +
+  geom_hline(yintercept = -log10(pval_cutoff), linetype = "dashed", color = "black", linewidth = 0.4) +
+  scale_color_manual(values = c("Downregulated" = "blue", 
+                                "Upregulated" = "red", 
+                                "NS" = "darkgrey")) +
+  ggrepel::geom_label_repel(data = top_genes_data, 
+                   aes(label = gene),
+                   fill = "white",         # Background of the box
+                   color = "black",        # Text color
+                   segment.color = "black",# Line color
+                   size = 3.0,
+                   box.padding = 0.4,
+                   point.padding = 0.3,
+                   max.overlaps = Inf,     # Force all labels to show
+                   min.segment.length = 0, 
+                   show.legend = FALSE) +
+  coord_cartesian(xlim = c(-2.2, 2.2), ylim = c(0, 6)) + 
+  theme_bw() +
+  labs(title = "HIV-related Transcriptomic Changes of\nCSF Resting Memory B Cells",
+       subtitle = "Changes observed in PWH (reference: PWoH)",
+       x = bquote(~Log[2] ~ "Fold Change"),
+       y = bquote(~-Log[10] ~ "FDR"),
+       color = "Significance") +
+  theme(legend.position = "none",
+        plot.title = element_text(face = "bold", size = 14, hjust = 0.5),
+        plot.subtitle = element_text(size = 13, hjust = 0.5),
+        axis.title = element_text(size = 14))
+```
+
+## Suppl Fig 5
+
 ```{r}
 # select pathways to include
 pathways_select <- c(pathways_adaptive, pathways_IFN, pathways_cytokines, pathways_viral)
@@ -1313,7 +2181,7 @@ row_annotation <- data.frame(
 
 # list of gsea dataframes
 gsea_list <- list(CSF = GSEAres_CSF_discov@result %>% dplyr::filter(ID %in% pathways_select), 
-                  Blood = GSEAres_blood@result %>% dplyr::filter(ID %in% pathways_select))
+                  Blood = GSEAres_blood_discov@result %>% dplyr::filter(ID %in% pathways_select))
 
 gsea_heatmap(gsea_list, pval_cutoff = 0.1, collapsed_pathways = FALSE, 
              show_rownames = TRUE, gap_by_row = TRUE, gap_by_col = FALSE,
@@ -1328,7 +2196,7 @@ gsea_heatmap(gsea_list, pval_cutoff = 0.1, collapsed_pathways = FALSE,
              title = "GSEA in CSF and Blood MBC")
 ```
 
-## Suppl Fig 4
+## Suppl Fig 6
 
 ```{r}
 # select pathways of interest
@@ -1378,7 +2246,7 @@ plot_gene_set_scores(seurat_obj = gex_B_ART,
         panel.grid = element_blank())
 ```
 
-## Suppl Fig 5
+## Suppl Fig 7
 
 ### Panel A
 
@@ -1522,7 +2390,7 @@ ComplexHeatmap::pheatmap(
 rm(count_C, count_P, gene_matrix, row_counts, combined_matrix, gaps_row, gap_cols, gene_set_labels, annotation_col, row_annotation)
 ```
 
-## Suppl Fig 6
+## Suppl Fig 8
 
 ### Panel A
 
@@ -1671,13 +2539,11 @@ p4B <- p4B + theme(legend.position = "none")
 
 ```{r}
 # generate dotplot
-p <- DotPlot(gex_multi_Bcells, features = unique(markers_b$Marker), group.by = "annotated_clusters_B", cluster.idents = TRUE, scale = TRUE) %>%
-  add_info_bar(method = "join", 
-               info_type = "Cell_Type_Full",
-               info = markers_b %>%
-                 dplyr::select(Cell_Type_Full, Marker) %>%
-                 dplyr::rename(features.plot = Marker),
-               text_size = 6, label = FALSE) + RotatedAxis() +
+p <- DotPlot(gex_multi_Bcells, 
+             features = unique(markers_b$Marker), 
+             group.by = "annotated_clusters_B", 
+             cluster.idents = TRUE, scale = TRUE) + 
+  RotatedAxis() +
   scale_colour_gradient2(low = "blue", high = "red") +
   labs(x = "", y = "", title = "B Cell Marker Genes in CSF (Group 2)") +
     theme(strip.text.x = element_text(size = 12),
@@ -1687,12 +2553,114 @@ p <- DotPlot(gex_multi_Bcells, features = unique(markers_b$Marker), group.by = "
 
 # plot side metrics
 plot_dot_side(p, gex_multi_Bcells, row_identity = "annotated_clusters_B",
-              facet_col = "Cell_Type_Full", info_to_add = c("cluster_size")) +
+              info_to_add = c("cluster_size")) +
   labs(subtitle = "Right side stats: total counts")
 ```
 
 
-## Suppl Fig 7
+## Suppl Fig 9
+
+### Panel A
+
+```{r}
+Heatmap(tf_gene_mat,
+             name = "Regulated",
+             col = col_fun,
+             
+             # Clustering
+             cluster_rows = TRUE,
+             cluster_columns = TRUE,
+             clustering_distance_rows = "binary",
+             clustering_distance_columns = "binary",
+             
+             # Appearance
+             rect_gp = gpar(col = "grey85", lwd = 0.5),  # cell borders
+             border = TRUE,
+             
+             # Row (TF) settings
+             row_names_gp = gpar(fontsize = 10, fontface = "italic"),
+             row_title = "Transcription Factors",
+             row_title_gp = gpar(fontsize = 12, fontface = "bold"),
+             row_dend_width = unit(15, "mm"),
+             
+             # Column (Gene) settings
+             column_names_gp = gpar(fontsize = 8, col = col_colors),
+             column_names_rot = 45,
+             column_title = "Differential Genes",
+             column_title_gp = gpar(fontsize = 12, fontface = "bold"),
+             column_dend_height = unit(15, "mm"),
+             
+             # Annotations
+             #top_annotation = col_anno,
+             right_annotation = row_anno,
+             
+             # Legend
+             heatmap_legend_param = list(
+               title = "Regulation",
+               at = c(0, 1),
+               labels = c("No", "Yes"),
+               legend_height = unit(2, "cm"),
+               title_gp = gpar(fontsize = 10, fontface = "bold"),
+               labels_gp = gpar(fontsize = 9)
+             ),
+             
+             # Size
+             width = ncol(tf_gene_mat) * unit(4, "mm"),
+             height = nrow(tf_gene_mat) * unit(8, "mm")
+)
+
+
+png(filename = "./Bcell_differential_motif_heatmap.png", width = 15, height = 7, units = "in", res = 600)
+draw(p, 
+     padding = unit(c(3, 3, 3, 3), "mm"),
+     heatmap_legend_side = "right",
+     annotation_legend_side = "right")
+dev.off()
+```
+
+### Panel B
+
+```{r}
+# -----------------------------------------------------------------------------
+# Relabel HIV status and sample IDs for plotting
+# -----------------------------------------------------------------------------
+proj_atac_celltype$HIV_status[
+  which(proj_atac_celltype$HIV_status == "control")
+] <- "PWoH"
+
+sample_map <- read.csv("./sample_map.csv")
+proj_atac_celltype$new_sample <- sample_map[proj_atac_celltype$Sample]
+
+# -----------------------------------------------------------------------------
+# Coverage plot: PWH vs PWoH
+# -----------------------------------------------------------------------------
+STATUS_COLORS <- c("PWH" = "#9e9ac8", "PWoH" = "#41ab5d")
+GENES_TO_PLOT <- c("HLA-DQA1", "TGFBR2", "NFKBIA", "UBE2K")
+
+p <- plotBrowserTrack(
+  ArchRProj    = proj_atac_celltype,
+  groupBy      = "HIV_status",
+  geneSymbol   = GENES_TO_PLOT,
+  upstream     = 20000,
+  downstream   = 20000,
+  title        = "",
+  minCells     = 3,
+  pal          = unname(STATUS_COLORS),
+  loops        = p2g_loops,
+  facetbaseSize = 10
+)
+
+output_file <- file.path(OUTPUT_DIR, "Bcell_ATAC_coverage_plot_HIV_status.pdf")
+pdf(file = output_file, width = 10, height = 8)
+for (i in seq_along(p)) {
+  grid::grid.newpage()
+  grid::grid.draw(p[[i]])
+}
+dev.off()
+```
+
+
+## Suppl Fig 10
 
 ```{r}
 # Isotype groups
@@ -1761,7 +2729,7 @@ p1 + p2 + plot_layout(guides = "collect", axis_titles = "collect", widths = c(3,
         plot.tag = element_text(size = 15, face = "bold"))
 ```
 
-## Suppl Fig 8
+## Suppl Fig 11
 
 ### Panel A
 
@@ -1915,7 +2883,7 @@ p1_3 / p2_4 + plot_layout(heights = c(1.5, 1))
 ```
 
 
-## Suppl Fig 9
+## Suppl Fig 12
 
 ```{r}
 # calculate the median mutation frequency of a clone
